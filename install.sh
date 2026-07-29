@@ -183,17 +183,16 @@ systemctl restart ssh
 # ---------------------------------------------------------------------------
 # 9. xrdp
 # ---------------------------------------------------------------------------
+# xrdp 0.10.x does not bind to a plain "address=" key — a bare "port=3389"
+# means listen on all interfaces regardless of "address". The bind address
+# has to be encoded into the port directive itself: port=tcp://<ip>:<port>.
 log "restricting xrdp to $AP_IP:$RDP_PORT"
 backup_once /etc/xrdp/xrdp.ini
-if grep -qE '^address=' /etc/xrdp/xrdp.ini; then
-    sed -i -E "s/^address=.*/address=${AP_IP}/" /etc/xrdp/xrdp.ini
-else
-    sed -i "/^\[Globals\]/a address=${AP_IP}" /etc/xrdp/xrdp.ini
-fi
+sed -i -E '/^address=/d' /etc/xrdp/xrdp.ini
 if grep -qE '^port=' /etc/xrdp/xrdp.ini; then
-    sed -i -E "s/^port=.*/port=${RDP_PORT}/" /etc/xrdp/xrdp.ini
+    sed -i -E "s#^port=.*#port=tcp://${AP_IP}:${RDP_PORT}#" /etc/xrdp/xrdp.ini
 else
-    sed -i "/^\[Globals\]/a port=${RDP_PORT}" /etc/xrdp/xrdp.ini
+    sed -i "/^\[Globals\]/a port=tcp://${AP_IP}:${RDP_PORT}" /etc/xrdp/xrdp.ini
 fi
 systemctl enable xrdp xrdp-sesman >/dev/null
 systemctl restart xrdp xrdp-sesman
@@ -215,6 +214,11 @@ systemctl restart avahi-daemon
 # ---------------------------------------------------------------------------
 # 11. rpcbind — restrict to loopback + AP subnet only
 # ---------------------------------------------------------------------------
+# rpcbind is systemd socket-activated on this system: rpcbind.socket binds
+# 0.0.0.0:111/[::]:111 directly in the unit file, before rpcbind's own -h
+# flags (set via /etc/default/rpcbind) ever get a chance to matter. Both
+# have to be addressed: the OPTIONS file for non-socket-activated fallback,
+# and a socket unit override for the actual listening addresses.
 log "restricting rpcbind to loopback + $AP_IP"
 backup_once /etc/default/rpcbind
 RPCBIND_OPTS="-w -h 127.0.0.1 -h ::1 -h ${AP_IP}"
@@ -223,7 +227,23 @@ if grep -qE '^OPTIONS=' /etc/default/rpcbind; then
 else
     echo "OPTIONS=\"${RPCBIND_OPTS}\"" >> /etc/default/rpcbind
 fi
-systemctl restart rpcbind
+
+mkdir -p /etc/systemd/system/rpcbind.socket.d
+cat > /etc/systemd/system/rpcbind.socket.d/pi5-router.conf <<EOF
+[Socket]
+ListenStream=
+ListenDatagram=
+ListenStream=127.0.0.1:111
+ListenDatagram=127.0.0.1:111
+ListenStream=[::1]:111
+ListenDatagram=[::1]:111
+ListenStream=${AP_IP}:111
+ListenDatagram=${AP_IP}:111
+EOF
+
+systemctl daemon-reload
+systemctl restart rpcbind.socket
+systemctl restart rpcbind.service
 
 # ---------------------------------------------------------------------------
 # 12. Summary
