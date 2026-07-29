@@ -1,0 +1,11 @@
+# Managed by pi5-router install.sh — do not edit by hand, edit router.conf instead.
+interface=__AP_WIFI_IF__
+bind-dynamic
+listen-address=__AP_IP__
+no-resolv
+__DNS_SERVER_LINES__
+domain-needed
+bogus-priv
+dhcp-range=__DHCP_RANGE_START__,__DHCP_RANGE_END__,255.255.255.0,12h
+dhcp-option=option:router,__AP_IP__
+dhcp-option=option:dns-server,__AP_IP__

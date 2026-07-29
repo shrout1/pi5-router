@@ -1,0 +1,11 @@
+# Managed by pi5-router install.sh — do not edit by hand, edit router.conf instead.
+net.ipv4.ip_forward=1
+
+# IPv6 doesn't NAT, so a hotel network handing out a global IPv6 address on the
+# uplink interfaces would otherwise let the Pi be reached directly from the
+# hotel side, bypassing the IPv4 NAT/firewall isolation entirely. Disabling it
+# on the router-relevant interfaces closes that off rather than trying to
+# firewall it.
+net.ipv6.conf.__ETH_IF__.disable_ipv6=1
+net.ipv6.conf.__USB_WIFI_IF__.disable_ipv6=1
+net.ipv6.conf.__AP_WIFI_IF__.disable_ipv6=1

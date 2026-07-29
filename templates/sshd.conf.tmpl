@@ -1,0 +1,5 @@
+# Managed by pi5-router install.sh — do not edit by hand, edit router.conf instead.
+# Defense in depth alongside the nftables ruleset: sshd itself never binds
+# a socket on the hotel-facing interfaces.
+ListenAddress __AP_IP__
+Port __SSH_PORT__

@@ -1,0 +1,16 @@
+# Copy this file to router.conf and edit as needed. router.conf is gitignored
+# because AP_PASSPHRASE lives here — don't commit real credentials.
+
+AP_SSID="Armadillo"
+AP_PASSPHRASE="***REMOVED-CREDENTIAL***"
+AP_BAND="bg"          # bg = 2.4GHz (broadest device compatibility), a = 5GHz
+AP_SUBNET_PREFIX="24"
+AP_IP="172.24.1.1"
+DHCP_RANGE_START="172.24.1.50"
+DHCP_RANGE_END="172.24.1.250"
+UPSTREAM_DNS="1.1.1.1 9.9.9.9"   # used by dnsmasq for the room network only;
+                                  # the Pi's own uplink DNS stays on whatever
+                                  # the hotel hands out via DHCP, unmodified,
+                                  # so captive-portal login keeps working.
+SSH_PORT="22"
+RDP_PORT="3389"

@@ -1,0 +1,41 @@
+#!/usr/sbin/nft -f
+# Managed by pi5-router install.sh — do not edit by hand, edit router.conf instead.
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        iif "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+
+        iifname "__AP_WIFI_IF__" icmp type { echo-request, destination-unreachable, time-exceeded } accept
+        iifname "__AP_WIFI_IF__" udp dport { 53, 67 } accept
+        iifname "__AP_WIFI_IF__" tcp dport { 53, __SSH_PORT__, __RDP_PORT__ } accept
+
+        # No accept rules for __ETH_IF__ / __USB_WIFI_IF__ (the hotel-facing interfaces) on purpose:
+        # anything unsolicited arriving there is silently dropped, not rejected, so the Pi does
+        # not respond to port scans or pings from the hotel side.
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+
+        iifname "__AP_WIFI_IF__" oifname { "__ETH_IF__", "__USB_WIFI_IF__" } accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        oifname { "__ETH_IF__", "__USB_WIFI_IF__" } masquerade
+    }
+}
