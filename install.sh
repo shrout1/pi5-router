@@ -34,7 +34,7 @@ else
     source "$SCRIPT_DIR/router.conf.example"
 fi
 
-for v in AP_SSID AP_PASSPHRASE AP_BAND AP_SUBNET_PREFIX AP_IP \
+for v in AP_SSID AP_PASSPHRASE AP_BAND AP_CHANNEL AP_SUBNET_PREFIX AP_IP \
          DHCP_RANGE_START DHCP_RANGE_END UPSTREAM_DNS SSH_PORT RDP_PORT; do
     [[ -n "${!v:-}" ]] || die "config variable $v is not set"
 done
@@ -110,29 +110,92 @@ dns_server_lines() {
 log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y dnsmasq nftables xfce4 lightdm xrdp
+apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp
 
 # ---------------------------------------------------------------------------
-# 4. AP connection (NetworkManager)
+# 4. AP interface — hostapd
 # ---------------------------------------------------------------------------
-log "configuring AP connection '$CONN_NAME' on $AP_WIFI_IF"
-if ! nmcli -t -f NAME connection show | grep -Fxq "$CONN_NAME"; then
-    nmcli connection add type wifi ifname "$AP_WIFI_IF" con-name "$CONN_NAME" autoconnect yes ssid "$AP_SSID"
-fi
-nmcli connection modify "$CONN_NAME" \
-    802-11-wireless.mode ap \
-    802-11-wireless.band "$AP_BAND" \
-    ipv4.method manual \
-    ipv4.addresses "${AP_IP}/${AP_SUBNET_PREFIX}" \
-    ipv4.never-default yes \
-    ipv4.dns "" \
-    ipv6.method disabled \
-    wifi-sec.key-mgmt wpa-psk \
-    wifi-sec.proto rsn \
-    wifi-sec.pairwise ccmp \
-    wifi-sec.group ccmp \
-    wifi-sec.psk "$AP_PASSPHRASE"
-nmcli connection up "$CONN_NAME"
+# NetworkManager's own AP mode is implemented via wpa_supplicant, which only
+# speaks 802.11n (HT) — it has no VHT/802.11ac support at all, capping
+# throughput regardless of band/channel. hostapd's nl80211 driver supports
+# full VHT80, so $AP_WIFI_IF is handed to hostapd instead: NetworkManager is
+# told to ignore that interface entirely (it keeps managing $ETH_IF/
+# $USB_WIFI_IF exactly as before), and a small oneshot service assigns its
+# static IP since NM no longer will.
+log "handing $AP_WIFI_IF to hostapd (NetworkManager will ignore it)"
+
+nmcli connection delete "$CONN_NAME" >/dev/null 2>&1 || true
+
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/99-pi5-router-unmanaged.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:${AP_WIFI_IF}
+EOF
+nmcli general reload >/dev/null
+
+cat > /etc/systemd/system/pi5-router-ap-ip.service <<EOF
+[Unit]
+Description=Static IP for pi5-router AP interface (${AP_WIFI_IF})
+After=sys-subsystem-net-devices-${AP_WIFI_IF}.device
+BindsTo=sys-subsystem-net-devices-${AP_WIFI_IF}.device
+Before=hostapd.service dnsmasq.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ip link set ${AP_WIFI_IF} up
+ExecStart=/usr/sbin/ip addr replace ${AP_IP}/${AP_SUBNET_PREFIX} dev ${AP_WIFI_IF}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# VHT80 needs a channel that's part of a clean 4-channel 80MHz block; map the
+# supported non-DFS blocks, otherwise fall back to HT40/HT20 only.
+VHT_WIDTH=0
+VHT_CENTER=0
+case "$AP_CHANNEL" in
+    36|40|44|48)      VHT_WIDTH=1; VHT_CENTER=42  ;;
+    149|153|157|161)  VHT_WIDTH=1; VHT_CENTER=155 ;;
+esac
+
+{
+    echo "interface=${AP_WIFI_IF}"
+    echo "driver=nl80211"
+    echo "country_code=US"
+    echo "ssid=${AP_SSID}"
+    echo "wpa=2"
+    echo "wpa_key_mgmt=WPA-PSK"
+    echo "wpa_passphrase=${AP_PASSPHRASE}"
+    echo "rsn_pairwise=CCMP"
+    echo "auth_algs=1"
+    echo "macaddr_acl=0"
+    echo "ignore_broadcast_ssid=0"
+    echo "wmm_enabled=1"
+    echo "channel=${AP_CHANNEL}"
+    echo "ieee80211n=1"
+    if [[ "$AP_BAND" == "a" ]]; then
+        echo "hw_mode=a"
+        echo "ieee80211ac=1"
+        echo "ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40]"
+        if [[ "$VHT_WIDTH" == 1 ]]; then
+            echo "vht_capab=[SHORT-GI-80]"
+            echo "vht_oper_chwidth=${VHT_WIDTH}"
+            echo "vht_oper_centr_freq_seg0_idx=${VHT_CENTER}"
+        fi
+    else
+        echo "hw_mode=g"
+        echo "ht_capab=[SHORT-GI-20]"
+    fi
+} > /etc/hostapd/hostapd.conf
+chmod 0600 /etc/hostapd/hostapd.conf
+
+systemctl daemon-reload
+systemctl enable pi5-router-ap-ip.service >/dev/null
+systemctl restart pi5-router-ap-ip.service
+systemctl unmask hostapd >/dev/null 2>&1 || true
+systemctl enable hostapd >/dev/null
+systemctl restart hostapd
 
 # ---------------------------------------------------------------------------
 # 5. dnsmasq

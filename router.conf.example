@@ -3,7 +3,16 @@
 
 AP_SSID="Armadillo"
 AP_PASSPHRASE="***REMOVED-CREDENTIAL***"
-AP_BAND="bg"          # bg = 2.4GHz (broadest device compatibility), a = 5GHz
+AP_BAND="a"           # bg = 2.4GHz (broadest device compatibility, ~30-40Mbps
+                      # real-world on a single-stream HT20 link); a = 5GHz
+                      # (much higher throughput, needs 5GHz-capable clients)
+AP_CHANNEL="149"      # for AP_BAND=a: a non-DFS channel (36/40/44/48 or
+                      # 149/153/157/161/165) avoids the ~1min radar Channel
+                      # Availability Check and mid-session channel-switch
+                      # disruptions DFS channels (52-144) can trigger.
+                      # 149/153/157/161 or 36/40/44/48 also get VHT80
+                      # (4-channel 80MHz block); 165 is VHT20/40 only.
+                      # for AP_BAND=bg: pick 1, 6, or 11.
 AP_SUBNET_PREFIX="24"
 AP_IP="172.24.1.1"
 DHCP_RANGE_START="172.24.1.50"
