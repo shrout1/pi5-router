@@ -41,6 +41,13 @@ done
 
 CONN_NAME="${AP_SSID}-AP"
 
+# The desktop/RDP setup below targets the human user who owns this box, not
+# root. sudo sets SUDO_USER; fall back to logname for the (unusual) case of a
+# direct root login.
+TARGET_USER="${SUDO_USER:-$(logname)}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || die "could not resolve home directory for $TARGET_USER"
+
 # ---------------------------------------------------------------------------
 # 2. Detect interfaces
 # ---------------------------------------------------------------------------
@@ -110,7 +117,7 @@ dns_server_lines() {
 log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp
+apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp network-manager-gnome
 
 # ---------------------------------------------------------------------------
 # 4. AP interface — hostapd
@@ -260,6 +267,48 @@ fi
 systemctl enable xrdp xrdp-sesman >/dev/null
 systemctl restart xrdp xrdp-sesman
 
+# xrdp reads/writes its own TLS cert; needs the login user in ssl-cert.
+usermod -aG ssl-cert "$TARGET_USER"
+
+# ~/.xsession must exist, be executable, and force GDK_BACKEND=x11. Without
+# the exec bit, Debian's /etc/X11/Xsession falls through to whatever session
+# picker is system-default (Raspberry Pi Desktop's Wayfire/labwc, not XFCE),
+# producing sessions that crash or hang. Even with that fixed, XFCE's GTK3
+# apps (xfce4-panel, xfdesktop) will silently connect to labwc's Wayland
+# socket at /run/user/<uid>/wayland-0 instead of this X11 session whenever
+# a local monitor session is also active on the same box (this is a hotel
+# router with a physical-monitor use case, not just headless) — GDK tries
+# the Wayland backend before X11 by default, and libwayland-client falls back
+# to connecting to "wayland-0" even when $WAYLAND_DISPLAY isn't set. Result:
+# an RDP session that looks alive (all processes running, no crash) but
+# renders solid black, while a rogue second desktop briefly disrupts the
+# physical monitor's wallpaper. Forcing GDK_BACKEND=x11 is what actually
+# fixes this — everything else tried along the way (xorg.conf GPU options,
+# resetting xfconf) was not the root cause.
+log "writing $TARGET_HOME/.xsession (forces GDK_BACKEND=x11)"
+install -m 0755 -o "$TARGET_USER" -g "$TARGET_USER" \
+    "$SCRIPT_DIR/templates/xsession.tmpl" "$TARGET_HOME/.xsession"
+
+# The xorgxrdp package ships an xorg.conf written for x86 (DRMAllowList
+# "i915 radeon", which doesn't exist on this SoC's vc4/v3d GPU, plus an
+# explicit DRMDevice/DRI3 pointed at the real GPU render node). Deploy a
+# corrected version: glamor stays loaded (xorgxrdp's driver and input
+# modules have a hard link-time dependency on glamor symbols and fail to
+# load at all without it — this isn't optional acceleration), but nothing
+# in this file targets a real DRM device, and ProbeAllGpus is turned off.
+log "correcting /etc/X11/xrdp/xorg.conf for this hardware"
+backup_once /etc/X11/xrdp/xorg.conf
+install -m 0644 "$SCRIPT_DIR/templates/xrdp-xorg.conf.tmpl" /etc/X11/xrdp/xorg.conf
+
+# Firefox's default-on DNS-over-HTTPS bypasses the local resolver, which
+# breaks captive-portal detection (the portal's redirect never fires, and
+# what does load looks like an unrelated TLS/cert failure). This is a
+# system-wide policy, not a per-profile pref, so it applies before the user
+# ever opens Settings.
+log "disabling Firefox DNS-over-HTTPS (breaks captive-portal login otherwise)"
+mkdir -p /etc/firefox/policies
+install -m 0644 "$SCRIPT_DIR/templates/firefox-policies.json.tmpl" /etc/firefox/policies/policies.json
+
 # ---------------------------------------------------------------------------
 # 10. avahi — restrict to the AP interface only
 # ---------------------------------------------------------------------------
@@ -324,9 +373,29 @@ pi5-router setup complete.
   SSH / RDP       : reachable only from ${AP_IP}/${AP_SUBNET_PREFIX}
 
 If the hotel network requires a captive-portal login, that has to be
-completed by the Pi's own uplink (eth0/wlan1) — e.g. via a browser on
-the Pi if a display is attached — before room devices get real
-internet access. Devices behind the AP cannot complete it on the
-Pi's behalf.
+completed by the Pi's own uplink (eth0/wlan1) before room devices get
+real internet access — devices behind the AP cannot complete it on the
+Pi's behalf. RDP into ${AP_IP}:${RDP_PORT} for a full XFCE desktop
+(NetworkManager applet in the panel tray, Firefox and Chromium both
+installed) to pick the uplink SSID and drive the portal login yourself.
+
+Two gotchas that look unrelated to networking but aren't:
+  - No RTC battery means the clock resets to 1970 on power loss and
+    stays wrong until NTP syncs — which needs the uplink to already be
+    online, a chicken-and-egg problem the captive portal makes worse.
+    A wrong clock breaks OCSP/certificate validation on essentially
+    every HTTPS site, including the portal's own login page, and shows
+    up as unrelated-looking "secure connection failed" errors. If nmcli
+    can already reach the AP's gateway (or NTP happens to sneak through
+    the captive portal's walled garden) this resolves itself; otherwise
+    set the date manually first with \`sudo date -s "YYYY-MM-DD HH:MM:SS"\`
+    (local time) before troubleshooting anything else HTTPS-related.
+  - Firefox's DNS-over-HTTPS is disabled by this installer's policy
+    (see templates/firefox-policies.json.tmpl) because it bypasses the
+    local resolver and breaks captive-portal redirect detection
+    entirely — a symptom that looks like "nothing loads" rather than
+    an obvious DNS error. Chromium has no equivalent policy here; if
+    portal detection silently fails there too, check
+    chrome://settings/security → Use secure DNS.
 ==================================================================
 EOF

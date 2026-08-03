@@ -37,11 +37,38 @@ owns or a small set of well-known package-config lines it edits in place
 ## After running
 
 The Pi's own uplink still has to clear the hotel's captive portal itself
-(e.g. via a browser on the Pi, if it has a display attached, or a
-text-mode workaround over SSH/console) before the room network gets real
-internet access — a device connected to the AP can't do this on the Pi's
-behalf, since most hotel portals gate per-MAC/per-session on the uplink
-connection, not on downstream NATed clients.
+before the room network gets real internet access — a device connected to
+the AP can't do this on the Pi's behalf, since most hotel portals gate
+per-MAC/per-session on the uplink connection, not on downstream NATed
+clients. RDP into the AP address (`${AP_IP}:${RDP_PORT}` from your
+`router.conf`) for a full XFCE desktop to pick the uplink SSID (via the
+NetworkManager applet in the panel) and drive the portal login in Firefox
+or Chromium, both installed.
+
+## Known gotchas
+
+- **Clock / RTC.** This hardware has no RTC battery, so the clock resets
+  to 1970 on power loss and stays wrong until NTP syncs — which needs the
+  uplink already online, a chicken-and-egg problem a captive portal makes
+  worse. A wrong clock breaks OCSP/certificate validation on nearly every
+  HTTPS site, including the portal's own login page, and presents as an
+  unrelated-looking "secure connection failed" error rather than an
+  obvious clock warning. If this happens, set the date manually before
+  troubleshooting anything else HTTPS-related:
+  `sudo date -s "YYYY-MM-DD HH:MM:SS"` (local time).
+- **Firefox DNS-over-HTTPS.** Disabled system-wide by this installer
+  (`templates/firefox-policies.json.tmpl`) because it bypasses the local
+  resolver and silently breaks captive-portal redirect detection — the
+  symptom is "nothing loads," not an obvious DNS error. Chromium has no
+  equivalent policy deployed here; if it also fails to detect the portal,
+  check `chrome://settings/security` → "Use secure DNS".
+- **RDP shows a black screen / desktop looks alive but renders nothing.**
+  XFCE's GTK3 apps prefer a Wayland backend and will silently connect to
+  a local monitor's Wayland compositor instead of the RDP X11 session
+  whenever one is active on the same box, rather than erroring. `.xsession`
+  (`templates/xsession.tmpl`) forces `GDK_BACKEND=x11` specifically to
+  prevent this — if you ever recreate `~/.xsession` by hand, keep that
+  line.
 
 ## Verification checklist
 
