@@ -10,6 +10,9 @@ Turns a Raspberry Pi into a hotel-room travel router:
 - NATed access point on the Pi's onboard wifi radio for devices in the room.
 - SSH and RDP (xrdp) reachable only from the AP-side subnet, never from the
   hotel-facing interfaces.
+- Status dashboard (connected clients, uplink/AP/service status, WAN IP,
+  speed test) at `http://172.24.1.1:8080` or `http://127.0.0.1:8080` —
+  same AP-subnet-and-loopback-only restriction as SSH/RDP.
 - Silent on the hotel-facing side: no response to port scans or pings, no
   mDNS/Bonjour broadcasts, no RPC portmapper exposure.
 
@@ -76,10 +79,11 @@ or Chromium, both installed.
    `nftables.service` enabled.
 2. From a device connected to the AP SSID: gets a lease in the configured
    DHCP range, can reach `ssh`/RDP on the AP IP, has internet once the
-   uplink is past the captive portal.
-3. From the hotel-side network: `nmap -Pn <pi-hotel-ip>` shows nothing open,
-   `ping` gets no reply, `avahi-browse -a` from another device on that
-   segment doesn't see the Pi.
+   uplink is past the captive portal, and can load the status dashboard at
+   `http://172.24.1.1:8080` (shows itself in the connected-clients list).
+3. From the hotel-side network: `nmap -Pn <pi-hotel-ip>` shows nothing open
+   (including the dashboard port), `ping` gets no reply, `avahi-browse -a`
+   from another device on that segment doesn't see the Pi.
 4. `ip addr show`, `ip route` — no IPv6 global addresses on the uplink
    interfaces; default route flips between Ethernet and wifi automatically
    as you plug/unplug Ethernet.

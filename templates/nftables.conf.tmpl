@@ -12,7 +12,7 @@ table inet filter {
 
         iifname "__AP_WIFI_IF__" icmp type { echo-request, destination-unreachable, time-exceeded } accept
         iifname "__AP_WIFI_IF__" udp dport { 53, 67 } accept
-        iifname "__AP_WIFI_IF__" tcp dport { 53, __SSH_PORT__, __RDP_PORT__ } accept
+        iifname "__AP_WIFI_IF__" tcp dport { 53, __SSH_PORT__, __RDP_PORT__, __DASHBOARD_PORT__ } accept
 
         # No accept rules for __ETH_IF__ / __USB_WIFI_IF__ (the hotel-facing interfaces) on purpose:
         # anything unsolicited arriving there is silently dropped, not rejected, so the Pi does

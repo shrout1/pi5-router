@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi5-router status</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>pi5-router</h1>
+  <span id="refresh-indicator" class="dot"></span>
+</header>
+
+<main>
+  <section class="grid">
+    <div class="card" id="card-ap">
+      <h2>Access Point</h2>
+      <dl>
+        <dt>SSID</dt><dd id="ap-ssid">&mdash;</dd>
+        <dt>Band / channel</dt><dd id="ap-band-channel">&mdash;</dd>
+        <dt>AP address</dt><dd id="ap-ip">&mdash;</dd>
+        <dt>hostapd</dt><dd id="ap-hostapd" class="status">&mdash;</dd>
+        <dt>Clients</dt><dd id="ap-client-count">&mdash;</dd>
+      </dl>
+    </div>
+
+    <div class="card" id="card-uplink">
+      <h2>Uplink</h2>
+      <dl>
+        <dt>Active</dt><dd id="uplink-active">&mdash;</dd>
+        <dt>Network</dt><dd id="uplink-network">&mdash;</dd>
+        <dt>WAN IP</dt><dd id="wan-ip">&mdash;</dd>
+        <dt>Ethernet</dt><dd id="uplink-eth" class="status">&mdash;</dd>
+        <dt>Ethernet IP</dt><dd id="uplink-eth-ip">&mdash;</dd>
+        <dt>Ethernet gateway</dt><dd id="uplink-eth-gateway">&mdash;</dd>
+        <dt>USB wifi</dt><dd id="uplink-wifi" class="status">&mdash;</dd>
+        <dt>USB wifi IP</dt><dd id="uplink-wifi-ip">&mdash;</dd>
+        <dt>USB wifi gateway</dt><dd id="uplink-wifi-gateway">&mdash;</dd>
+      </dl>
+    </div>
+
+    <div class="card" id="card-speedtest">
+      <h2>Speed test</h2>
+      <dl>
+        <dt>Provider</dt><dd id="speed-provider">&mdash;</dd>
+        <dt>Download</dt><dd id="speed-down">&mdash;</dd>
+        <dt>Upload</dt><dd id="speed-up">&mdash;</dd>
+        <dt>Ping</dt><dd id="speed-ping">&mdash;</dd>
+        <dt>Server</dt><dd id="speed-server">&mdash;</dd>
+        <dt>Server IP</dt><dd id="speed-server-ip">&mdash;</dd>
+        <dt>Last run</dt><dd id="speed-time">&mdash;</dd>
+      </dl>
+      <div class="clock-form">
+        <label>Provider
+          <select id="speedtest-provider">
+            <option value="ookla">Ookla (Speedtest.net)</option>
+            <option value="cloudflare">Cloudflare</option>
+            <option value="librespeed">LibreSpeed</option>
+            <option value="fastcom">fast.com (unofficial, may fail)</option>
+          </select>
+        </label>
+      </div>
+      <button id="speedtest-run">Run now</button>
+    </div>
+
+    <div class="card" id="card-wifi">
+      <h2>Wifi Uplink</h2>
+      <button id="wifi-scan">Scan for networks</button>
+      <ul id="wifi-network-list" class="wifi-list">
+        <li class="empty">No scan yet</li>
+      </ul>
+      <div class="clock-form" id="wifi-connect-form" hidden>
+        <label id="wifi-password-label">
+          Password for <strong id="wifi-selected-ssid"></strong>
+          <input type="password" id="wifi-password" autocomplete="off">
+        </label>
+      </div>
+      <button id="wifi-connect" hidden>Connect</button>
+      <p id="wifi-message" class="message"></p>
+    </div>
+
+    <div class="card" id="card-clock">
+      <h2>System Clock</h2>
+      <dl>
+        <dt>Current</dt><dd id="clock-now">&mdash;</dd>
+        <dt>NTP sync</dt><dd id="clock-ntp" class="status">&mdash;</dd>
+      </dl>
+      <div class="clock-form">
+        <label>Date <input type="date" id="clock-date"></label>
+        <label>Time <input type="time" id="clock-time" step="1"></label>
+        <label>Time zone
+          <select id="clock-tz"></select>
+        </label>
+      </div>
+      <button id="clock-apply">Set clock</button>
+      <p id="clock-message" class="message"></p>
+    </div>
+
+    <div class="card" id="card-services">
+      <h2>Services</h2>
+      <dl id="services-list"></dl>
+    </div>
+  </section>
+
+  <section class="card" id="card-clients">
+    <h2>Connected clients</h2>
+    <table>
+      <thead>
+        <tr><th>Host</th><th>IP</th><th>MAC</th><th>Connected</th></tr>
+      </thead>
+      <tbody id="clients-body">
+        <tr><td colspan="4" class="empty">No clients connected</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card" id="card-sessions">
+    <h2>Logged-in Sessions</h2>
+    <table>
+      <thead>
+        <tr><th>User</th><th>Connection</th><th>From</th><th>TTY</th><th>Since</th></tr>
+      </thead>
+      <tbody id="sessions-body">
+        <tr><td colspan="5" class="empty">No active sessions</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

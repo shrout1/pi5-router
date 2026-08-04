@@ -34,8 +34,9 @@ else
     source "$SCRIPT_DIR/router.conf.example"
 fi
 
-for v in AP_SSID AP_PASSPHRASE AP_BAND AP_CHANNEL AP_SUBNET_PREFIX AP_IP \
-         DHCP_RANGE_START DHCP_RANGE_END UPSTREAM_DNS SSH_PORT RDP_PORT; do
+for v in AP_SSID AP_BAND AP_CHANNEL AP_SUBNET_PREFIX AP_IP \
+         DHCP_RANGE_START DHCP_RANGE_END UPSTREAM_DNS SSH_PORT RDP_PORT \
+         DASHBOARD_PORT; do
     [[ -n "${!v:-}" ]] || die "config variable $v is not set"
 done
 
@@ -47,6 +48,39 @@ CONN_NAME="${AP_SSID}-AP"
 TARGET_USER="${SUDO_USER:-$(logname)}"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 [[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || die "could not resolve home directory for $TARGET_USER"
+
+# ---------------------------------------------------------------------------
+# 1b. AP_PASSPHRASE -- a credential, handled separately from the vars above:
+# generate/prompt rather than hard-fail, and persist it so re-runs don't ask
+# again. router.conf.example ships this blank on purpose (no baked-in
+# default credential).
+# ---------------------------------------------------------------------------
+if [[ -z "${AP_PASSPHRASE:-}" ]]; then
+    if [[ -t 0 ]]; then
+        for _ in 1 2 3; do
+            read -rsp "AP_PASSPHRASE not set. Enter a wifi passphrase (8-63 chars), or press Enter to auto-generate one: " AP_PASSPHRASE
+            echo
+            [[ -z "$AP_PASSPHRASE" ]] && break
+            (( ${#AP_PASSPHRASE} >= 8 && ${#AP_PASSPHRASE} <= 63 )) && break
+            echo "Passphrase must be 8-63 characters (WPA2 requirement); try again or leave blank to auto-generate." >&2
+            AP_PASSPHRASE=""
+        done
+    fi
+    if [[ -z "$AP_PASSPHRASE" ]]; then
+        AP_PASSPHRASE="$(openssl rand -hex 10)"
+        log "generated a random AP_PASSPHRASE (written to router.conf)"
+    fi
+fi
+
+CONF_FILE="$SCRIPT_DIR/router.conf"
+[[ -f "$CONF_FILE" ]] || cp "$SCRIPT_DIR/router.conf.example" "$CONF_FILE"
+if grep -q '^AP_PASSPHRASE=' "$CONF_FILE"; then
+    sed -i "s/^AP_PASSPHRASE=.*/AP_PASSPHRASE=\"${AP_PASSPHRASE}\"/" "$CONF_FILE"
+else
+    echo "AP_PASSPHRASE=\"${AP_PASSPHRASE}\"" >> "$CONF_FILE"
+fi
+chown "$TARGET_USER":"$TARGET_USER" "$CONF_FILE"
+chmod 0600 "$CONF_FILE"
 
 # ---------------------------------------------------------------------------
 # 2. Detect interfaces
@@ -117,7 +151,8 @@ dns_server_lines() {
 log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp network-manager-gnome
+apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp network-manager-gnome \
+    python3-flask speedtest-cli librespeed-cli
 
 # ---------------------------------------------------------------------------
 # 4. AP interface — hostapd
@@ -236,7 +271,8 @@ render "$SCRIPT_DIR/templates/nftables.conf.tmpl" /etc/nftables.conf \
     "ETH_IF=$ETH_IF" \
     "USB_WIFI_IF=$USB_WIFI_IF" \
     "SSH_PORT=$SSH_PORT" \
-    "RDP_PORT=$RDP_PORT"
+    "RDP_PORT=$RDP_PORT" \
+    "DASHBOARD_PORT=$DASHBOARD_PORT"
 systemctl enable nftables >/dev/null
 systemctl restart nftables
 
@@ -358,7 +394,41 @@ systemctl restart rpcbind.socket
 systemctl restart rpcbind.service
 
 # ---------------------------------------------------------------------------
-# 12. Summary
+# 12. Status dashboard
+# ---------------------------------------------------------------------------
+log "installing status dashboard"
+
+mkdir -p /etc/pi5-router
+cat > /etc/pi5-router/runtime.env <<EOF
+ETH_IF=$ETH_IF
+USB_WIFI_IF=$USB_WIFI_IF
+AP_WIFI_IF=$AP_WIFI_IF
+EOF
+chmod 0644 /etc/pi5-router/runtime.env
+
+install -m 0600 "$SCRIPT_DIR/router.conf" /etc/pi5-router/router.conf 2>/dev/null || \
+    install -m 0600 "$SCRIPT_DIR/router.conf.example" /etc/pi5-router/router.conf
+
+mkdir -p /opt/pi5-router
+rm -rf /opt/pi5-router/dashboard
+cp -a "$SCRIPT_DIR/dashboard" /opt/pi5-router/dashboard
+chown -R root:root /opt/pi5-router/dashboard
+
+install -m 0644 "$SCRIPT_DIR/templates/pi5-router-dashboard.service.tmpl" \
+    /etc/systemd/system/pi5-router-dashboard.service
+
+render "$SCRIPT_DIR/templates/pi5-router-speedtest.dispatcher.tmpl" \
+    /etc/NetworkManager/dispatcher.d/90-pi5-router-speedtest \
+    "ETH_IF=$ETH_IF" \
+    "USB_WIFI_IF=$USB_WIFI_IF"
+chmod 0755 /etc/NetworkManager/dispatcher.d/90-pi5-router-speedtest
+
+systemctl daemon-reload
+systemctl enable pi5-router-dashboard >/dev/null
+systemctl restart pi5-router-dashboard
+
+# ---------------------------------------------------------------------------
+# 13. Summary
 # ---------------------------------------------------------------------------
 cat <<EOF
 
@@ -371,6 +441,8 @@ pi5-router setup complete.
   AP SSID         : $AP_SSID
   AP address      : ${AP_IP}/${AP_SUBNET_PREFIX}
   SSH / RDP       : reachable only from ${AP_IP}/${AP_SUBNET_PREFIX}
+  Dashboard       : http://127.0.0.1:${DASHBOARD_PORT} or http://${AP_IP}:${DASHBOARD_PORT}
+                    (reachable only from ${AP_IP}/${AP_SUBNET_PREFIX} and loopback)
 
 If the hotel network requires a captive-portal login, that has to be
 completed by the Pi's own uplink (eth0/wlan1) before room devices get

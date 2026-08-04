@@ -1,0 +1,234 @@
+:root {
+  --bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --text: #1a1d21;
+  --muted: #6b7280;
+  --border: #e2e5e9;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --bad: #dc2626;
+  --warn: #d97706;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --card-bg: #1d2025;
+    --text: #e8eaed;
+    --muted: #9aa1ab;
+    --border: #2b2f36;
+    --accent: #5b9dff;
+    --ok: #4ade80;
+    --bad: #f87171;
+    --warn: #fbbf24;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 1.1rem;
+  margin: 0;
+  font-weight: 600;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  transition: background 0.2s;
+}
+.dot.stale { background: var(--bad); }
+
+main {
+  padding: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* Fixed 3-column layout: row 1 is AP/Uplink/Speed test, row 2 is Wifi
+   Uplink/System Clock/Services, in that DOM order -- explicit columns
+   rather than auto-fit so the row grouping stays put regardless of how
+   much content is in any one card. Single column below 900px so it still
+   works on a phone. */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 900px) {
+  .grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.card h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.75rem;
+}
+
+dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.status.up, .status.active { color: var(--ok); }
+.status.down, .status.failed { color: var(--bad); }
+.status.unknown { color: var(--warn); }
+
+button {
+  margin-top: 0.75rem;
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+th, td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  color: var(--muted);
+  font-weight: 500;
+}
+td.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 1rem;
+}
+
+.clock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.clock-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.clock-form input,
+.clock-form select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+
+.message {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  min-height: 1.1em;
+}
+.message.ok { color: var(--ok); }
+.message.error { color: var(--bad); }
+
+.wifi-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.wifi-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.wifi-list li:last-child { border-bottom: none; }
+.wifi-list li:hover { background: var(--bg); }
+.wifi-list li.selected { background: var(--accent); color: #fff; }
+.wifi-list li.empty {
+  cursor: default;
+  color: var(--muted);
+  justify-content: center;
+}
+
+.wifi-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}
+.wifi-list li.selected .wifi-meta { color: rgba(255, 255, 255, 0.85); }
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.badge-ssh { background: rgba(37, 99, 235, 0.15); color: var(--accent); }
+.badge-rdp { background: rgba(217, 119, 6, 0.15); color: var(--warn); }
+.badge-local { background: rgba(22, 163, 74, 0.15); color: var(--ok); }
+.badge-unknown { background: rgba(107, 114, 128, 0.15); color: var(--muted); }

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Managed by pi5-router install.sh — do not edit by hand, edit router.conf instead.
+#
+# NetworkManager dispatcher: on "up" for the ethernet or USB wifi uplink
+# interface, wait (in the background) for real internet -- the hotel
+# captive portal has to be cleared manually first, per the pi5-router
+# README -- then run a speed test and cache the result for the dashboard.
+# Only actually runs speedtest-cli if there's no cached result yet or the
+# last one is more than 5 days old -- "up" fires on every reconnect
+# (cable replug, wifi roam, DHCP renewal...), and a speed test is heavy
+# enough that running it every single time would be disruptive. The
+# dashboard's own "Run now" button always runs regardless of staleness.
+# Gives up quietly after ~5 minutes if connectivity never arrives.
+
+set -u
+
+IFACE="$1"
+ACTION="${2:-}"
+
+ETH_IF="__ETH_IF__"
+USB_WIFI_IF="__USB_WIFI_IF__"
+
+[[ "$IFACE" == "$ETH_IF" || "$IFACE" == "$USB_WIFI_IF" ]] || exit 0
+[[ "$ACTION" == "up" ]] || exit 0
+
+LOCK=/run/pi5-router-speedtest.lock
+RESULT=/var/lib/pi5-router/speedtest.json
+
+exec 200>"$LOCK"
+flock -n 200 || exit 0   # a check is already in flight, don't stack another
+
+mkdir -p "$(dirname "$RESULT")"
+
+(
+    STALE_AFTER_SECONDS=$((5 * 24 * 60 * 60))  # 5 days
+    if [[ -f "$RESULT" ]]; then
+        fresh="$(python3 -c '
+import json, time
+try:
+    with open("'"$RESULT"'") as f:
+        age = time.time() - float(json.load(f).get("timestamp", 0))
+    print(1 if age < '"$STALE_AFTER_SECONDS"' else 0)
+except Exception:
+    print(0)
+')"
+        [[ "$fresh" == "1" ]] && exit 0
+    fi
+
+    attempts=0
+    max_attempts=30   # ~5 minutes at 10s intervals
+    until curl -sf --max-time 5 -o /dev/null https://api.ipify.org; do
+        attempts=$((attempts + 1))
+        [[ $attempts -ge $max_attempts ]] && exit 0
+        sleep 10
+    done
+
+    # Always the Ookla provider here -- this is the reliable automatic
+    # baseline test; the dashboard's provider picker is for manual runs.
+    # Schema matches dashboard/app.py's normalized speed test result so a
+    # dispatcher-produced result renders identically to a manual one.
+    command -v speedtest-cli >/dev/null 2>&1 || exit 0
+    raw="$(speedtest-cli --json 2>/dev/null)"
+    if [[ -n "$raw" ]]; then
+        printf '%s' "$raw" | python3 -c '
+import json, socket, sys, time
+
+PROVIDER = "ookla"
+PROVIDER_LABEL = "Ookla (Speedtest.net)"
+
+try:
+    data = json.load(sys.stdin)
+    server = data.get("server") or {}
+    host = (server.get("host") or "").split(":")[0] or None
+    try:
+        server_ip = socket.gethostbyname(host) if host else None
+    except OSError:
+        server_ip = None
+    result = {
+        "status": "ok",
+        "provider": PROVIDER,
+        "provider_label": PROVIDER_LABEL,
+        "timestamp": time.time(),
+        "download_mbps": round(data.get("download", 0) / 1_000_000, 2),
+        "upload_mbps": round(data.get("upload", 0) / 1_000_000, 2),
+        "ping_ms": round(data.get("ping", 0), 1),
+        "sponsor": server.get("sponsor"),
+        "server_name": server.get("name"),
+        "server_host": host,
+        "server_ip": server_ip,
+        "server_location": ", ".join(filter(None, [server.get("name"), server.get("country")])) or None,
+        "message": None,
+    }
+except Exception:
+    result = {
+        "status": "failed",
+        "provider": PROVIDER,
+        "provider_label": PROVIDER_LABEL,
+        "timestamp": time.time(),
+        "message": "speedtest-cli produced unparseable output",
+    }
+print(json.dumps(result))
+' > "${RESULT}.tmp" && mv "${RESULT}.tmp" "$RESULT"
+    else
+        ts="$(date +%s)"
+        printf '{"status": "failed", "provider": "ookla", "provider_label": "Ookla (Speedtest.net)", "timestamp": %s, "message": "speedtest-cli failed"}' "$ts" \
+            > "${RESULT}.tmp" && mv "${RESULT}.tmp" "$RESULT"
+    fi
+) & disown
+
+exit 0

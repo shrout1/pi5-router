@@ -1,0 +1,14 @@
+# Managed by pi5-router install.sh — do not edit by hand, edit router.conf instead.
+[Unit]
+Description=pi5-router status dashboard
+After=network-online.target hostapd.service dnsmasq.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pi5-router/dashboard/app.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,8 @@
 # because AP_PASSPHRASE lives here — don't commit real credentials.
 
 AP_SSID="Armadillo"
-AP_PASSPHRASE="***REMOVED-CREDENTIAL***"
+AP_PASSPHRASE=""      # leave blank to be prompted for one (or have a secure
+                      # random one generated) the first time install.sh runs
 AP_BAND="a"           # bg = 2.4GHz (broadest device compatibility, ~30-40Mbps
                       # real-world on a single-stream HT20 link); a = 5GHz
                       # (much higher throughput, needs 5GHz-capable clients)
@@ -23,3 +24,4 @@ UPSTREAM_DNS="1.1.1.1 9.9.9.9"   # used by dnsmasq for the room network only;
                                   # so captive-portal login keeps working.
 SSH_PORT="22"
 RDP_PORT="3389"
+DASHBOARD_PORT="8080"  # status dashboard, reachable from 127.0.0.1 and AP_IP only
