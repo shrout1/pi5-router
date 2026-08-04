@@ -404,8 +404,30 @@ function handleTimezoneChange() {
 
 document.getElementById("clock-tz").addEventListener("change", handleTimezoneChange);
 
+// Ticks the displayed clock every second between polls, rather than only
+// updating in 5s jumps -- resynced against the server's actual value on
+// every poll (renderClock below) so it can't drift or go stale.
+let clockBaseServerMs = null;
+let clockBaseLocalMs = null;
+let clockTimezone = null;
+
+function updateClockDisplay() {
+  if (clockBaseServerMs == null) return;
+  const estimated = new Date(clockBaseServerMs + (Date.now() - clockBaseLocalMs));
+  // Explicitly in the Pi's own configured timezone -- this panel is about
+  // the Pi's system clock, not whatever timezone the viewing browser is in.
+  const opts = clockTimezone ? { timeZone: clockTimezone } : undefined;
+  setText("clock-now", estimated.toLocaleString(undefined, opts));
+}
+
+setInterval(updateClockDisplay, 1000);
+
 function renderClock(clock) {
-  setText("clock-now", new Date(clock.now).toLocaleString());
+  clockBaseServerMs = new Date(clock.now).getTime();
+  clockBaseLocalMs = Date.now();
+  clockTimezone = clock.timezone || null;
+  updateClockDisplay();
+
   const ntp = document.getElementById("clock-ntp");
   ntp.textContent = clock.ntp_synchronized ? "synchronized" : "not synchronized";
   ntp.className = `status ${clock.ntp_synchronized ? "up" : "unknown"}`;
@@ -511,6 +533,23 @@ async function poll() {
     indicator.classList.add("stale");
   }
 }
+
+async function refreshNow(btn) {
+  // Clients/sessions already auto-update every poll cycle (5s); this just
+  // triggers one immediately instead of waiting out the cycle.
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Refreshing…";
+  try {
+    await poll();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+document.getElementById("clients-refresh").addEventListener("click", (e) => refreshNow(e.currentTarget));
+document.getElementById("sessions-refresh").addEventListener("click", (e) => refreshNow(e.currentTarget));
 
 async function runSpeedtest() {
   const btn = document.getElementById("speedtest-run");
