@@ -23,6 +23,12 @@
         <dt>hostapd</dt><dd id="ap-hostapd" class="status">&mdash;</dd>
         <dt>Clients</dt><dd id="ap-client-count">&mdash;</dd>
       </dl>
+      <div class="clock-form">
+        <label>SSID <input type="text" id="ap-ssid-input" maxlength="32"></label>
+        <label>Password <input type="password" id="ap-passphrase-input" autocomplete="off" placeholder="leave blank to keep current"></label>
+      </div>
+      <button id="ap-update">Update AP</button>
+      <p id="ap-message" class="message"></p>
     </div>
 
     <div class="card" id="card-uplink">
@@ -105,26 +111,30 @@
 
   <section class="card" id="card-clients">
     <h2>Connected clients</h2>
-    <table>
-      <thead>
-        <tr><th>Host</th><th>IP</th><th>MAC</th><th>Connected</th></tr>
-      </thead>
-      <tbody id="clients-body">
-        <tr><td colspan="4" class="empty">No clients connected</td></tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Host</th><th>IP</th><th>MAC</th><th>Connected</th></tr>
+        </thead>
+        <tbody id="clients-body">
+          <tr><td colspan="4" class="empty">No clients connected</td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 
   <section class="card" id="card-sessions">
     <h2>Logged-in Sessions</h2>
-    <table>
-      <thead>
-        <tr><th>User</th><th>Connection</th><th>From</th><th>TTY</th><th>Since</th></tr>
-      </thead>
-      <tbody id="sessions-body">
-        <tr><td colspan="5" class="empty">No active sessions</td></tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>User</th><th>Connection</th><th>From</th><th>TTY</th><th>Since</th></tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="5" class="empty">No active sessions</td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </main>
 

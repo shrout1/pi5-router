@@ -133,8 +133,13 @@ button:disabled {
   cursor: default;
 }
 
+.table-scroll {
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
+  min-width: 500px;
   border-collapse: collapse;
   font-size: 0.9rem;
 }

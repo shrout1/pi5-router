@@ -169,6 +169,56 @@ def get_ap_status(conf, runtime):
     return status
 
 
+_AP_SSID_MAX_BYTES = 32
+HOSTAPD_CONF_PATH = Path("/etc/hostapd/hostapd.conf")
+
+
+def update_ap_credentials(ssid, passphrase):
+    ssid = (ssid or "").strip()
+    if not ssid:
+        return False, "SSID is required"
+    if len(ssid.encode("utf-8")) > _AP_SSID_MAX_BYTES:
+        return False, f"SSID must be at most {_AP_SSID_MAX_BYTES} bytes"
+    if re.search(r"[\r\n#]", ssid):
+        return False, "SSID can't contain newlines or '#'"
+    if passphrase and not (8 <= len(passphrase) <= 63):
+        return False, "Passphrase must be 8-63 characters (WPA2 requirement)"
+
+    # Blank passphrase means "keep the current one" -- never echo the
+    # existing value back to the client to prefill it, so this is the only
+    # way to change just the SSID.
+    def _apply(path, ssid_pattern, ssid_line, pass_pattern, pass_line):
+        if not path.exists():
+            return
+        text = path.read_text()
+        if re.search(ssid_pattern, text, re.MULTILINE):
+            text = re.sub(ssid_pattern, ssid_line, text, flags=re.MULTILINE)
+        else:
+            text += f"\n{ssid_line}\n"
+        if passphrase:
+            if re.search(pass_pattern, text, re.MULTILINE):
+                text = re.sub(pass_pattern, pass_line, text, flags=re.MULTILINE)
+            else:
+                text += f"\n{pass_line}\n"
+        path.write_text(text)
+
+    _apply(
+        CONF_PATH,
+        r"^AP_SSID=.*$", f'AP_SSID="{ssid}"',
+        r"^AP_PASSPHRASE=.*$", f'AP_PASSPHRASE="{passphrase}"',
+    )
+    _apply(
+        HOSTAPD_CONF_PATH,
+        r"^ssid=.*$", f"ssid={ssid}",
+        r"^wpa_passphrase=.*$", f"wpa_passphrase={passphrase}",
+    )
+
+    _, rc = run(["systemctl", "restart", "hostapd"], timeout=15)
+    if rc != 0:
+        return False, "config updated but hostapd failed to restart -- check `systemctl status hostapd`"
+    return True, None
+
+
 def _operstate(iface):
     try:
         return Path(f"/sys/class/net/{iface}/operstate").read_text().strip()
@@ -854,6 +904,19 @@ def api_clock_set():
     if not ok:
         return jsonify({"status": "error", "message": message}), 400
     return jsonify({"status": "ok", "clock": get_clock_status()})
+
+
+@app.route("/api/ap/update", methods=["POST"])
+def api_ap_update():
+    payload = request.get_json(silent=True) or {}
+    ssid = payload.get("ssid") or ""
+    passphrase = payload.get("passphrase") or ""
+
+    ok, message = update_ap_credentials(ssid, passphrase)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    conf, runtime = load_config()
+    return jsonify({"status": "ok", "ap": get_ap_status(conf, runtime)})
 
 
 def main():

@@ -21,6 +21,8 @@ function setText(id, text) {
   if (el) el.textContent = text ?? "—";
 }
 
+let apSsidFieldInitialized = false;
+
 function renderAp(ap) {
   setText("ap-ssid", ap.ssid);
   setText("ap-band-channel", `${ap.band === "a" ? "5GHz" : "2.4GHz"} · ch ${ap.channel}`);
@@ -29,7 +31,59 @@ function renderAp(ap) {
   const hostapd = document.getElementById("ap-hostapd");
   hostapd.textContent = ap.hostapd;
   hostapd.className = `status ${statusClass(ap.hostapd)}`;
+
+  // Prefill the SSID field once so it's editable-in-place; never touch the
+  // password field (the API never returns AP_PASSPHRASE, so there's
+  // nothing to prefill it with anyway -- blank means "keep current").
+  if (!apSsidFieldInitialized && ap.ssid) {
+    document.getElementById("ap-ssid-input").value = ap.ssid;
+    apSsidFieldInitialized = true;
+  }
 }
+
+async function updateAp() {
+  const btn = document.getElementById("ap-update");
+  const message = document.getElementById("ap-message");
+  const ssid = document.getElementById("ap-ssid-input").value.trim();
+  const passphrase = document.getElementById("ap-passphrase-input").value;
+
+  if (!ssid) {
+    message.textContent = "SSID is required.";
+    message.className = "message error";
+    return;
+  }
+
+  btn.disabled = true;
+  message.textContent = "Updating… the AP will restart and connected devices will briefly disconnect.";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/ap/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssid, passphrase }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = "AP updated.";
+      message.className = "message ok";
+      document.getElementById("ap-passphrase-input").value = "";
+    } else {
+      message.textContent = data.message || "Failed to update AP.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    // If you're connected via the AP itself, restarting hostapd can drop
+    // this very request -- doesn't mean it failed. poll() below shows the
+    // real state once reconnected.
+    message.textContent = "Connection interrupted (expected if you're on this AP) -- check status above.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+    poll();
+  }
+}
+
+document.getElementById("ap-update").addEventListener("click", updateAp);
 
 function renderUplink(uplink, wanIp) {
   setText("uplink-active", uplink.active ? `${uplink.active} (${uplink.active_interface})` : "none");
