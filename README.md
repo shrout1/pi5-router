@@ -1,6 +1,13 @@
 # pi5-router
 
-Turns a Raspberry Pi into a hotel-room travel router:
+Hotel wifi is usually bad — slow, shared with everyone on the floor, and it
+makes you click through a login page on every single device. This turns a
+Raspberry Pi 5 into your own personal travel router: plug it into whatever
+the hotel gives you (ethernet, or their wifi if that's all there is), and it
+puts out a clean, fast, password-protected network just for your own stuff,
+with a little dashboard so you can see what's going on.
+
+Under the hood, that means:
 
 - Uplink to the hotel network via wired Ethernet when available, falling back
   automatically to a USB wifi adapter (tested with the Alfa AWUS036AXML) when
@@ -36,6 +43,19 @@ owns or a small set of well-known package-config lines it edits in place
 
 `router.conf` is gitignored since it holds the wifi passphrase — copy it from
 `router.conf.example` locally rather than committing real credentials.
+
+## Dashboard
+
+A small Flask app gives you a one-page view of everything the router's
+doing: AP status with an SSID/password update form, uplink details
+(per-interface IPs, gateway, WAN IP), a multi-provider speed test (Ookla,
+Cloudflare, LibreSpeed, fast.com), a wifi network picker for the uplink, the
+system clock (with a manual set for the no-RTC gotcha below), connected
+clients, service health, and logged-in sessions. Same trust boundary as
+SSH/RDP — only reachable from the AP subnet or loopback, never from the
+hotel side.
+
+![pi5-router dashboard](docs/dashboard.png)
 
 ## After running
 
