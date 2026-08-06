@@ -1,10 +1,9 @@
 # pi5-router
 
-Hotel wifi is usually bad — slow, shared with everyone on the floor, and it
-makes you click through a login page on every single device. This turns a
+This turns a
 Raspberry Pi 5 into your own personal travel router: plug it into whatever
 the hotel gives you (ethernet, or their wifi if that's all there is), and it
-puts out a clean, fast, password-protected network just for your own stuff,
+puts out a clean, password-protected network just for your own stuff,
 with a little dashboard so you can see what's going on.
 
 Under the hood, that means:
