@@ -50,9 +50,10 @@ doing: AP status with an SSID/password update form, uplink details
 (per-interface IPs, gateway, WAN IP), a multi-provider speed test (Ookla,
 Cloudflare, LibreSpeed, fast.com), a wifi network picker for the uplink, the
 system clock (with a manual set for the no-RTC gotcha below), connected
-clients, service health, and logged-in sessions. Same trust boundary as
-SSH/RDP — only reachable from the AP subnet or loopback, never from the
-hotel side.
+clients, service health, logged-in sessions, and restart/shutdown buttons
+for the Pi itself — no RDP/SSH needed just to power-cycle it before packing
+up. Same trust boundary as SSH/RDP — only reachable from the AP subnet or
+loopback, never from the hotel side.
 
 ![pi5-router dashboard](docs/dashboard.png)
 

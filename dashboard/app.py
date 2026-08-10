@@ -820,6 +820,29 @@ def set_clock(date_str, time_str, tz):
     return True, None
 
 
+# pi5-router-dashboard.service runs as root (see install.sh step 12), same
+# trust boundary as the AP-credential and clock endpoints above -- no extra
+# sudo/polkit wiring needed for systemctl reboot/poweroff.
+_POWER_ACTIONS = {"reboot": "reboot", "shutdown": "poweroff"}
+_POWER_DELAY_SECONDS = 5
+
+
+def _power_action_bg(systemctl_verb):
+    # Delayed so the client gets a real HTTP response and can show a
+    # countdown before the box actually goes down, rather than the request
+    # itself getting cut off mid-flight by the reboot/poweroff.
+    time.sleep(_POWER_DELAY_SECONDS)
+    run(["systemctl", systemctl_verb], timeout=10)
+
+
+def trigger_power_action(action):
+    verb = _POWER_ACTIONS.get(action)
+    if not verb:
+        return False
+    threading.Thread(target=_power_action_bg, args=(verb,), daemon=True).start()
+    return True
+
+
 app = Flask(__name__, static_folder=None)
 
 
@@ -917,6 +940,19 @@ def api_ap_update():
         return jsonify({"status": "error", "message": message}), 400
     conf, runtime = load_config()
     return jsonify({"status": "ok", "ap": get_ap_status(conf, runtime)})
+
+
+@app.route("/api/system/power", methods=["POST"])
+def api_system_power():
+    payload = request.get_json(silent=True) or {}
+    action = payload.get("action")
+    if action not in _POWER_ACTIONS:
+        return jsonify({"status": "error", "message": "action must be 'reboot' or 'shutdown'"}), 400
+    if not payload.get("confirm"):
+        return jsonify({"status": "error", "message": "confirmation required"}), 400
+
+    trigger_power_action(action)
+    return jsonify({"status": "scheduled", "action": action, "delay_seconds": _POWER_DELAY_SECONDS})
 
 
 def main():

@@ -3,33 +3,6 @@
 Ideas that aren't built yet, but worth doing next. Not a commitment, just a
 place to park design thinking so it isn't lost between sessions.
 
-## Power options pane
-
-A dashboard panel with **Shutdown** and **Restart** buttons for the Pi
-itself. Right now the only way to power-cycle it is a physical unplug or
-RDP/SSH in and run `sudo systemctl poweroff` / `reboot` by hand — annoying
-for something that's meant to be a plug-and-forget travel appliance,
-especially before packing it up to leave a room.
-
-Implementation notes, following the existing `dashboard/app.py` pattern
-(each panel is a `get_X_status()` feeding `/api/status`, plus a POST action
-endpoint):
-
-- `pi5-router-dashboard.service` already runs as root (see `install.sh`
-  step 12), so `systemctl poweroff` / `systemctl reboot` need no additional
-  sudo/polkit wiring — same trust boundary as the AP-credential and clock
-  endpoints already in `app.py`.
-- Needs a confirmation step in the UI — this is the one dashboard action
-  that's meaningfully destructive (kills the AP for every connected device
-  mid-session), unlike the existing panels which are all read-only or
-  easily reversible.
-- Worth a short grace-period/toast ("Shutting down in 5s…") so a misclick is
-  recoverable, and so it's obvious the button did something before the Pi
-  actually goes dark.
-- Restart should probably warn if there are active connected clients
-  (`get_clients()` already has this data) rather than silently dropping
-  everyone.
-
 ## VPN services pane
 
 A panel to manage an OpenVPN (or WireGuard) tunnel back to a home

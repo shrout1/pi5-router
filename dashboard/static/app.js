@@ -167,7 +167,10 @@ function renderServices(services) {
   }
 }
 
+let lastClientCount = 0;
+
 function renderClients(clients) {
+  lastClientCount = clients.length;
   const body = document.getElementById("clients-body");
   body.innerHTML = "";
   if (!clients.length) {
@@ -572,6 +575,71 @@ async function runSpeedtest() {
 }
 
 document.getElementById("speedtest-run").addEventListener("click", runSpeedtest);
+
+function startPowerCountdown(action, seconds) {
+  const message = document.getElementById("power-message");
+  const label = action === "reboot" ? "Restarting" : "Shutting down";
+  let remaining = seconds;
+  message.className = "message";
+  message.textContent = `${label} in ${remaining}s…`;
+  const timer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearInterval(timer);
+      message.textContent =
+        action === "reboot"
+          ? "Restarting now — the dashboard will be back in a minute or two."
+          : "Shutting down now — power the Pi back on by hand when you need it again.";
+      return;
+    }
+    message.textContent = `${label} in ${remaining}s…`;
+  }, 1000);
+}
+
+async function triggerPower(action) {
+  const label = action === "reboot" ? "restart" : "shut down";
+  let confirmMsg = `Are you sure you want to ${label} the Pi?`;
+  if (lastClientCount > 0) {
+    confirmMsg += ` ${lastClientCount} device${lastClientCount === 1 ? "" : "s"} currently connected to the AP will lose their connection.`;
+  }
+  if (action === "shutdown") {
+    confirmMsg += " It will stay off until it's powered back on by hand — there's no remote power-on.";
+  }
+  if (!window.confirm(confirmMsg)) return;
+
+  const rebootBtn = document.getElementById("power-reboot");
+  const shutdownBtn = document.getElementById("power-shutdown");
+  const message = document.getElementById("power-message");
+  rebootBtn.disabled = true;
+  shutdownBtn.disabled = true;
+  message.textContent = "";
+  message.className = "message";
+
+  try {
+    const res = await fetch("/api/system/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, confirm: true }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "scheduled") {
+      startPowerCountdown(data.action, data.delay_seconds);
+    } else {
+      message.textContent = data.message || `Failed to ${label}.`;
+      message.className = "message error";
+      rebootBtn.disabled = false;
+      shutdownBtn.disabled = false;
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+    rebootBtn.disabled = false;
+    shutdownBtn.disabled = false;
+  }
+}
+
+document.getElementById("power-reboot").addEventListener("click", () => triggerPower("reboot"));
+document.getElementById("power-shutdown").addEventListener("click", () => triggerPower("shutdown"));
 
 poll();
 setInterval(poll, POLL_MS);
