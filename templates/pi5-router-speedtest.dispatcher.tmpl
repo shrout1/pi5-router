@@ -18,9 +18,20 @@ IFACE="$1"
 ACTION="${2:-}"
 
 ETH_IF="__ETH_IF__"
-USB_WIFI_IF="__USB_WIFI_IF__"
+AP_WIFI_IF="__AP_WIFI_IF__"
 
-[[ "$IFACE" == "$ETH_IF" || "$IFACE" == "$USB_WIFI_IF" ]] || exit 0
+# The USB wifi uplink has no fixed interface name (see nftables.conf.tmpl /
+# dashboard/app.py) -- any wifi device that isn't the onboard AP radio is a
+# candidate, so it's recognized the same way they detect one: attached via
+# USB. Keep this heuristic in sync with the others if it changes.
+is_usb_wifi_uplink() {
+    [[ "$1" != "$AP_WIFI_IF" ]] || return 1
+    local devpath
+    devpath="$(readlink -f "/sys/class/net/$1/device" 2>/dev/null || true)"
+    [[ "$devpath" == *"/usb"* ]]
+}
+
+[[ "$IFACE" == "$ETH_IF" ]] || is_usb_wifi_uplink "$IFACE" || exit 0
 [[ "$ACTION" == "up" ]] || exit 0
 
 LOCK=/run/pi5-router-speedtest.lock

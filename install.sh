@@ -89,26 +89,35 @@ log "detecting network interfaces"
 
 ETH_IF="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="ethernet"{print $1; exit}')"
 
-USB_WIFI_IF=""
+# Only the AP radio is detected here. USB wifi uplink adapters are not: any
+# number can be present, absent, or hot-swapped, and which one (if any) is
+# actively used is a live, dashboard-managed choice (see
+# dashboard/app.py:list_uplink_wifi_candidates / apply_uplink_selection), not
+# an install-time fact worth freezing into a config file. The same
+# USB-vs-onboard sysfs-path heuristic is used there; keep the two in sync if
+# this changes.
 AP_WIFI_IF=""
 while IFS=: read -r dev type; do
     [[ "$type" == "wifi" ]] || continue
     devpath="$(readlink -f "/sys/class/net/$dev/device" 2>/dev/null || true)"
-    if [[ "$devpath" == *"/usb"* ]]; then
-        USB_WIFI_IF="$dev"
-    else
+    if [[ "$devpath" != *"/usb"* ]]; then
         AP_WIFI_IF="$dev"
+        break
     fi
 done < <(nmcli -t -f DEVICE,TYPE device status)
 
-[[ -n "$ETH_IF" ]]      || die "no ethernet interface detected"
-[[ -n "$USB_WIFI_IF" ]] || die "no USB wifi interface detected (expected the Alfa uplink)"
-[[ -n "$AP_WIFI_IF" ]]  || die "no onboard wifi interface detected (expected the AP radio)"
-[[ "$USB_WIFI_IF" != "$AP_WIFI_IF" ]] || die "USB and onboard wifi resolved to the same interface"
+[[ -n "$ETH_IF" ]]     || die "no ethernet interface detected"
+[[ -n "$AP_WIFI_IF" ]] || die "no onboard wifi interface detected (expected the AP radio)"
 
 log "  ethernet uplink : $ETH_IF"
-log "  USB wifi uplink : $USB_WIFI_IF (Alfa)"
 log "  AP radio        : $AP_WIFI_IF"
+log "  USB wifi uplink : chosen live from the dashboard's adapter picker -- none required to be present now"
+
+# Fixed name, not detected -- this interface only exists once a VPN config is
+# saved through the dashboard (see dashboard/app.py). Referencing it by name
+# in nftables below is safe even before it exists; oifname/iifname match by
+# string, not by live interface index.
+VPN_IF="wg-pi5"
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -152,7 +161,7 @@ log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp network-manager-gnome \
-    python3-flask speedtest-cli librespeed-cli
+    python3-flask speedtest-cli librespeed-cli wireguard wireguard-tools
 
 # ---------------------------------------------------------------------------
 # 4. AP interface — hostapd
@@ -161,9 +170,9 @@ apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp network-manager-g
 # speaks 802.11n (HT) — it has no VHT/802.11ac support at all, capping
 # throughput regardless of band/channel. hostapd's nl80211 driver supports
 # full VHT80, so $AP_WIFI_IF is handed to hostapd instead: NetworkManager is
-# told to ignore that interface entirely (it keeps managing $ETH_IF/
-# $USB_WIFI_IF exactly as before), and a small oneshot service assigns its
-# static IP since NM no longer will.
+# told to ignore that interface entirely (it keeps managing $ETH_IF and any
+# USB wifi uplink adapters exactly as before), and a small oneshot service
+# assigns its static IP since NM no longer will.
 log "handing $AP_WIFI_IF to hostapd (NetworkManager will ignore it)"
 
 nmcli connection delete "$CONN_NAME" >/dev/null 2>&1 || true
@@ -258,7 +267,6 @@ systemctl restart dnsmasq
 log "configuring sysctl (ip_forward, disable IPv6 on router interfaces)"
 render "$SCRIPT_DIR/templates/sysctl.conf.tmpl" /etc/sysctl.d/99-hotel-router.conf \
     "ETH_IF=$ETH_IF" \
-    "USB_WIFI_IF=$USB_WIFI_IF" \
     "AP_WIFI_IF=$AP_WIFI_IF"
 sysctl --system >/dev/null
 
@@ -269,12 +277,22 @@ log "configuring nftables"
 render "$SCRIPT_DIR/templates/nftables.conf.tmpl" /etc/nftables.conf \
     "AP_WIFI_IF=$AP_WIFI_IF" \
     "ETH_IF=$ETH_IF" \
-    "USB_WIFI_IF=$USB_WIFI_IF" \
+    "VPN_IF=$VPN_IF" \
     "SSH_PORT=$SSH_PORT" \
     "RDP_PORT=$RDP_PORT" \
     "DASHBOARD_PORT=$DASHBOARD_PORT"
 systemctl enable nftables >/dev/null
 systemctl restart nftables
+
+# ---------------------------------------------------------------------------
+# 7b. VPN (WireGuard) scaffolding
+# ---------------------------------------------------------------------------
+# Only the directory and package are set up here -- no tunnel exists until a
+# provider config is saved through the dashboard's VPN card. wireguard-tools
+# ships the wg-quick@.service systemd template used to bring it up/down, so
+# nothing project-specific is needed there either.
+log "preparing WireGuard directory"
+install -d -m 0700 /etc/wireguard
 
 # ---------------------------------------------------------------------------
 # 8. SSH
@@ -401,7 +419,6 @@ log "installing status dashboard"
 mkdir -p /etc/pi5-router
 cat > /etc/pi5-router/runtime.env <<EOF
 ETH_IF=$ETH_IF
-USB_WIFI_IF=$USB_WIFI_IF
 AP_WIFI_IF=$AP_WIFI_IF
 EOF
 chmod 0644 /etc/pi5-router/runtime.env
@@ -420,7 +437,7 @@ install -m 0644 "$SCRIPT_DIR/templates/pi5-router-dashboard.service.tmpl" \
 render "$SCRIPT_DIR/templates/pi5-router-speedtest.dispatcher.tmpl" \
     /etc/NetworkManager/dispatcher.d/90-pi5-router-speedtest \
     "ETH_IF=$ETH_IF" \
-    "USB_WIFI_IF=$USB_WIFI_IF"
+    "AP_WIFI_IF=$AP_WIFI_IF"
 chmod 0755 /etc/NetworkManager/dispatcher.d/90-pi5-router-speedtest
 
 systemctl daemon-reload
@@ -436,7 +453,7 @@ cat <<EOF
 pi5-router setup complete.
 
   Ethernet uplink : $ETH_IF
-  USB wifi uplink : $USB_WIFI_IF (Alfa)
+  USB wifi uplink : choose from the dashboard's adapter picker (VPN/Wifi Uplink card)
   AP radio        : $AP_WIFI_IF
   AP SSID         : $AP_SSID
   AP address      : ${AP_IP}/${AP_SUBNET_PREFIX}
@@ -445,11 +462,12 @@ pi5-router setup complete.
                     (reachable only from ${AP_IP}/${AP_SUBNET_PREFIX} and loopback)
 
 If the hotel network requires a captive-portal login, that has to be
-completed by the Pi's own uplink (eth0/wlan1) before room devices get
-real internet access — devices behind the AP cannot complete it on the
-Pi's behalf. RDP into ${AP_IP}:${RDP_PORT} for a full XFCE desktop
-(NetworkManager applet in the panel tray, Firefox and Chromium both
-installed) to pick the uplink SSID and drive the portal login yourself.
+completed by the Pi's own uplink (${ETH_IF}, or whichever USB wifi adapter
+is chosen from the dashboard) before room devices get real internet access
+— devices behind the AP cannot complete it on the Pi's behalf. RDP into
+${AP_IP}:${RDP_PORT} for a full XFCE desktop (NetworkManager applet in the
+panel tray, Firefox and Chromium both installed) to pick the uplink SSID
+and drive the portal login yourself.
 
 Two gotchas that look unrelated to networking but aren't:
   - No RTC battery means the clock resets to 1970 on power loss and

@@ -6,6 +6,11 @@ net.ipv4.ip_forward=1
 # hotel side, bypassing the IPv4 NAT/firewall isolation entirely. Disabling it
 # on the router-relevant interfaces closes that off rather than trying to
 # firewall it.
+#
+# The USB wifi uplink isn't listed here: unlike __ETH_IF__/__AP_WIFI_IF__, it
+# isn't a fixed interface name known at install time -- any number of
+# adapters can be plugged in later and chosen from the dashboard. Each one is
+# disabled the same way (`sysctl -w net.ipv6.conf.<if>.disable_ipv6=1`) live,
+# by dashboard/app.py, as soon as it's detected.
 net.ipv6.conf.__ETH_IF__.disable_ipv6=1
-net.ipv6.conf.__USB_WIFI_IF__.disable_ipv6=1
 net.ipv6.conf.__AP_WIFI_IF__.disable_ipv6=1

@@ -72,6 +72,12 @@
 
     <div class="card" id="card-wifi">
       <h2>Wifi Uplink</h2>
+      <div class="clock-form">
+        <label>Adapter
+          <select id="wifi-adapter-select"></select>
+        </label>
+      </div>
+      <p id="wifi-adapter-message" class="message"></p>
       <button id="wifi-scan">Scan for networks</button>
       <ul id="wifi-network-list" class="wifi-list">
         <li class="empty">No scan yet</li>
@@ -151,6 +157,54 @@
         </tbody>
       </table>
     </div>
+  </section>
+
+  <section class="card" id="card-vpn">
+    <h2>VPN</h2>
+    <dl>
+      <dt>Active config</dt><dd id="vpn-label">&mdash;</dd>
+      <dt>Status</dt><dd id="vpn-connected" class="status">&mdash;</dd>
+      <dt>Tunnel IP</dt><dd id="vpn-tunnel-ip">&mdash;</dd>
+      <dt>Endpoint</dt><dd id="vpn-endpoint">&mdash;</dd>
+      <dt>Last handshake</dt><dd id="vpn-handshake">&mdash;</dd>
+      <dt>Transfer</dt><dd id="vpn-transfer">&mdash;</dd>
+    </dl>
+
+    <h3>Saved configs</h3>
+    <ul id="vpn-config-list" class="wifi-list">
+      <li class="empty">No configs saved yet</li>
+    </ul>
+    <p id="vpn-config-action-message" class="message"></p>
+
+    <h3>Add a config</h3>
+    <div class="clock-form">
+      <label>Provider
+        <select id="vpn-provider-select">
+          <option value="protonvpn">ProtonVPN</option>
+        </select>
+      </label>
+    </div>
+    <ol id="vpn-provider-help" class="vpn-help-steps"></ol>
+    <div class="clock-form">
+      <label>Name <input type="text" id="vpn-config-label" placeholder="e.g. Tokyo" maxlength="40"></label>
+      <div id="vpn-provider-fields"></div>
+    </div>
+    <button id="vpn-save-config">Save config</button>
+    <p id="vpn-config-message" class="message"></p>
+
+    <h3>Traffic through VPN</h3>
+    <div class="clock-form">
+      <label>Mode
+        <select id="vpn-mode-select">
+          <option value="off">Off &mdash; no client traffic through the VPN</option>
+          <option value="all">All AP clients</option>
+          <option value="selected">Selected clients</option>
+        </select>
+      </label>
+    </div>
+    <ul id="vpn-client-list" class="wifi-list" hidden></ul>
+    <button id="vpn-mode-apply">Apply traffic mode</button>
+    <p id="vpn-mode-message" class="message"></p>
   </section>
 </main>
 

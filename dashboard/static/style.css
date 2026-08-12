@@ -95,6 +95,42 @@ main {
   margin: 0 0 0.75rem;
 }
 
+.card h3 {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 1.1rem 0 0.4rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.card h3:first-of-type {
+  margin-top: 0.75rem;
+}
+
+.vpn-help-steps {
+  margin: 0 0 0.5rem;
+  padding-left: 1.2rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.vpn-help-steps li {
+  margin-bottom: 0.2rem;
+}
+.vpn-help-steps a {
+  color: var(--accent);
+}
+
+.list-row-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.list-row-actions button {
+  margin-top: 0;
+  width: auto;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+}
+
 .card-header-row {
   display: flex;
   align-items: baseline;

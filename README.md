@@ -9,10 +9,14 @@ with a little dashboard so you can see what's going on.
 Under the hood, that means:
 
 - Uplink to the hotel network via wired Ethernet when available, falling back
-  automatically to a USB wifi adapter (tested with the Alfa AWUS036AXML) when
-  it's not. NetworkManager's route metrics handle the failover — Ethernet
-  just needs a lower metric than the wifi uplink, which is the NetworkManager
-  default.
+  automatically to a USB wifi adapter when it's not. NetworkManager's route
+  metrics handle the failover — Ethernet just needs a lower metric than the
+  wifi uplink, which is the NetworkManager default. Any USB wifi adapter
+  Linux/NetworkManager recognizes works, not a specific model — none has to
+  be plugged in at install time either; adapters are detected live and can
+  be added, removed, or swapped freely. If more than one is connected at
+  once, pick which one is actually the uplink from the dashboard's Wifi
+  Uplink card.
 - NATed access point on the Pi's onboard wifi radio for devices in the room.
 - SSH and RDP (xrdp) reachable only from the AP-side subnet, never from the
   hotel-facing interfaces.
@@ -26,7 +30,8 @@ Built for Debian 13 (trixie) on a Raspberry Pi 5, using NetworkManager +
 nftables. Requires:
 - one wired Ethernet interface (NetworkManager-managed)
 - one onboard wifi radio (becomes the AP)
-- one USB wifi adapter (becomes the wifi uplink)
+- optionally, any number of USB wifi adapters (wifi uplink fallback) —
+  none needed at install time; add or swap them whenever
 
 ## Usage
 
@@ -48,12 +53,36 @@ owns or a small set of well-known package-config lines it edits in place
 A small Flask app gives you a one-page view of everything the router's
 doing: AP status with an SSID/password update form, uplink details
 (per-interface IPs, gateway, WAN IP), a multi-provider speed test (Ookla,
-Cloudflare, LibreSpeed, fast.com), a wifi network picker for the uplink, the
-system clock (with a manual set for the no-RTC gotcha below), connected
-clients, service health, logged-in sessions, and restart/shutdown buttons
-for the Pi itself — no RDP/SSH needed just to power-cycle it before packing
-up. Same trust boundary as SSH/RDP — only reachable from the AP subnet or
-loopback, never from the hotel side.
+Cloudflare, LibreSpeed, fast.com), an uplink wifi adapter and network picker
+(any number of USB adapters, chosen live, no reinstall needed to add or swap
+one), the system clock (with a manual set for the no-RTC gotcha below),
+connected clients, service health, logged-in sessions, restart/shutdown
+buttons for the Pi itself, and a VPN panel (see below) — no RDP/SSH needed
+just to power-cycle it before packing up. Same trust boundary as SSH/RDP —
+only reachable from the AP subnet or loopback, never from the hotel side.
+
+### VPN
+
+Save one or more named WireGuard configs (ProtonVPN is the first supported
+provider — a link and step-by-step guide in the card walks you through
+generating one at protonvpn.com and pasting it in, with real validation on
+what you paste rather than a generic error) and switch between them from
+the dashboard. Whichever one is active, choose whose traffic uses it: off,
+every AP client, or a hand-picked subset, without disturbing anyone else's
+direct uplink route. Devices on the AP stay on the same network and can
+always reach each other directly — hostapd relays client-to-client traffic
+itself, so that never depends on VPN mode.
+
+Nothing ProtonVPN-specific is hardcoded outside `VPN_PROVIDERS` in
+`dashboard/app.py` — adding another provider means adding an entry there
+with its own field list, not touching the routing.
+
+A couple of things this doesn't do yet: DNS lookups for VPN-routed clients
+still go out through dnsmasq's normal upstream, not through the tunnel
+(dnsmasq proxies the query itself, so the original client's routing mark
+doesn't carry over to its outbound request); and if the tunnel drops,
+marked traffic blackholes rather than silently falling back to the direct
+uplink until it's reconnected.
 
 ![pi5-router dashboard](docs/dashboard.png)
 

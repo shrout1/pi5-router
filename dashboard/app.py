@@ -10,6 +10,7 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, available_timezones
@@ -40,6 +41,7 @@ SERVICE_UNITS = [
     "avahi-daemon",
     "rpcbind.socket",
     "pi5-router-dashboard",
+    "wg-quick@wg-pi5",
 ]
 
 _KV_RE = re.compile(r'^([A-Z_][A-Z0-9_]*)=["\']?(.*?)["\']?\s*(?:#.*)?$')
@@ -264,9 +266,166 @@ def _iface_gateway(iface):
     return m.group(1) if m else None
 
 
+# ---------------------------------------------------------------------------
+# USB wifi uplink adapter selection -- live, not install-time. Any number of
+# adapters can be plugged in, unplugged, or swapped at any time; which one
+# (if any) is the actual uplink is a runtime choice reconciled against
+# nftables/sysctl here, not a name baked into a config file by install.sh.
+# ---------------------------------------------------------------------------
+UPLINK_STATE_PATH = Path("/etc/pi5-router/uplink-if.json")
+
+
+def _ifindex(iface):
+    try:
+        return int(Path(f"/sys/class/net/{iface}/ifindex").read_text().strip())
+    except (OSError, ValueError):
+        return 10**9  # unknown -- sort last, never picked as the "first plugged in" default
+
+
+def _is_usb_iface(iface):
+    try:
+        devpath = str(Path(f"/sys/class/net/{iface}/device").resolve())
+    except OSError:
+        return False
+    return "/usb" in devpath
+
+
+def list_uplink_wifi_candidates(runtime):
+    """Every wifi device NetworkManager currently sees that isn't the onboard
+    AP radio -- evaluated live on every call, not an install-time snapshot.
+    Same USB-vs-onboard sysfs heuristic install.sh uses to find the AP radio;
+    keep the two in sync if this changes."""
+    ap_if = runtime.get("AP_WIFI_IF", "")
+    out, rc = run(["nmcli", "-t", "-f", "DEVICE,TYPE", "device", "status"])
+    if rc != 0:
+        return []
+    candidates = []
+    for line in out.splitlines():
+        parts = line.split(":")
+        if len(parts) < 2:
+            continue
+        dev, typ = parts[0], parts[1]
+        if typ != "wifi" or dev == ap_if:
+            continue
+        if _is_usb_iface(dev):
+            candidates.append(dev)
+    # Lower ifindex = detected earlier by the kernel -- the "first plugged
+    # in" tiebreak for the default when the user hasn't chosen one.
+    candidates.sort(key=_ifindex)
+    return candidates
+
+
+def _iface_description(iface):
+    out, rc = run(["nmcli", "-t", "-f", "GENERAL.VENDOR,GENERAL.PRODUCT", "device", "show", iface])
+    vendor = product = None
+    for line in out.splitlines():
+        key, _, val = line.partition(":")
+        val = val.strip()
+        if val and val != "--":
+            if key == "GENERAL.VENDOR":
+                vendor = val
+            elif key == "GENERAL.PRODUCT":
+                product = val
+    return " ".join(filter(None, [vendor, product])) or None
+
+
+def _load_uplink_state():
+    try:
+        return json.loads(UPLINK_STATE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"selected": None}
+
+
+def _save_uplink_state(selected):
+    UPLINK_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UPLINK_STATE_PATH.write_text(json.dumps({"selected": selected}))
+
+
+def get_active_uplink_wifi_if(runtime, candidates=None):
+    if candidates is None:
+        candidates = list_uplink_wifi_candidates(runtime)
+    if not candidates:
+        return None
+    chosen = _load_uplink_state().get("selected")
+    return chosen if chosen in candidates else candidates[0]
+
+
+def get_uplink_wifi_adapters(runtime):
+    candidates = list_uplink_wifi_candidates(runtime)
+    active = get_active_uplink_wifi_if(runtime, candidates)
+    return {
+        "active": active,
+        "auto": _load_uplink_state().get("selected") is None,
+        "candidates": [{"interface": c, "label": _iface_description(c) or c} for c in candidates],
+    }
+
+
+_uplink_ipv6_disabled = set()
+
+
+def apply_uplink_selection(runtime):
+    """Reconciles live system state with whichever USB wifi adapter is
+    currently selected: disables IPv6 on every candidate (sysctl.conf.tmpl
+    only covers ETH_IF/AP_WIFI_IF -- see its comment), keeps exactly the
+    active one (plus ETH_IF/VPN_IF) in the nftables `uplinks` sets, and
+    disconnects any other candidate so it can't quietly win the default
+    route out from under the selected one."""
+    candidates = list_uplink_wifi_candidates(runtime)
+    active = get_active_uplink_wifi_if(runtime, candidates)
+
+    for c in candidates:
+        if c not in _uplink_ipv6_disabled:
+            run(["sysctl", "-w", f"net.ipv6.conf.{c}.disable_ipv6=1"])
+            _uplink_ipv6_disabled.add(c)
+
+    members = [i for i in (runtime.get("ETH_IF", ""), VPN_IF, active) if i]
+    elements = "{ " + ", ".join(f'"{m}"' for m in members) + " }"
+    for family, table in (("inet", "filter"), ("ip", "nat")):
+        run(["nft", "flush", "set", family, table, "uplinks"])
+        if members:
+            run(["nft", "add", "element", family, table, "uplinks", elements])
+
+    for c in candidates:
+        if c != active:
+            run(["nmcli", "device", "disconnect", c])
+
+    return candidates, active
+
+
+_last_uplink_signature = None
+
+
+def maybe_reapply_uplink_selection(runtime):
+    """Cheap to call on every poll -- only actually touches nft/sysctl/nmcli
+    when the candidate list or active interface changed since last checked,
+    so a hotplug or a dashboard selection takes effect within one poll cycle
+    without churning the firewall on every request."""
+    global _last_uplink_signature
+    candidates = list_uplink_wifi_candidates(runtime)
+    active = get_active_uplink_wifi_if(runtime, candidates)
+    signature = (tuple(candidates), active)
+    if signature != _last_uplink_signature:
+        apply_uplink_selection(runtime)
+        _last_uplink_signature = signature
+    return candidates, active
+
+
+def select_uplink_wifi_adapter(runtime, iface):
+    """iface falsy clears the preference back to auto (first-detected)."""
+    global _last_uplink_signature
+    candidates = list_uplink_wifi_candidates(runtime)
+    if iface and iface not in candidates:
+        return False, "adapter not currently present"
+    _save_uplink_state(iface or None)
+    apply_uplink_selection(runtime)
+    active = get_active_uplink_wifi_if(runtime, candidates)
+    _last_uplink_signature = (tuple(candidates), active)
+    return True, None
+
+
 def get_uplink_status(runtime):
     eth_if = runtime.get("ETH_IF", "")
-    usb_if = runtime.get("USB_WIFI_IF", "")
+    usb_if = get_active_uplink_wifi_if(runtime)
     active_if = _default_route_iface()
 
     interfaces = {}
@@ -307,16 +466,17 @@ def _nmcli_unescape(value):
     return value.replace("\\:", ":").replace("\\\\", "\\")
 
 
-def get_wifi_networks(runtime):
-    """Scan for networks visible to the USB wifi uplink adapter -- never the
-    onboard AP radio, which hostapd owns and NetworkManager doesn't manage."""
-    usb_if = runtime.get("USB_WIFI_IF", "")
-    if not usb_if:
+def get_wifi_networks(iface):
+    """Scan for networks visible to the given wifi uplink adapter -- never
+    the onboard AP radio, which hostapd owns and NetworkManager doesn't
+    manage. `iface` is whichever adapter is currently the active uplink
+    choice (see get_active_uplink_wifi_if), not a fixed install-time name."""
+    if not iface:
         return []
     out, rc = run(
         [
             "nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
-            "device", "wifi", "list", "ifname", usb_if, "--rescan", "yes",
+            "device", "wifi", "list", "ifname", iface, "--rescan", "yes",
         ],
         timeout=20,
     )
@@ -348,14 +508,13 @@ def get_wifi_networks(runtime):
     return sorted(best.values(), key=lambda n: n["signal"], reverse=True)
 
 
-def connect_wifi(runtime, ssid, password):
-    usb_if = runtime.get("USB_WIFI_IF", "")
-    if not usb_if:
-        return False, "no wifi uplink interface detected"
+def connect_wifi(iface, ssid, password):
+    if not iface:
+        return False, "no wifi uplink adapter selected"
     if not ssid:
         return False, "network name is required"
 
-    cmd = ["nmcli", "device", "wifi", "connect", ssid, "ifname", usb_if]
+    cmd = ["nmcli", "device", "wifi", "connect", ssid, "ifname", iface]
     if password:
         cmd += ["password", password]
 
@@ -375,18 +534,18 @@ _wifi_connect_state = {"status": "idle", "ssid": None, "message": None}
 _wifi_connect_state_lock = threading.Lock()
 
 
-def _wifi_connect_bg(runtime, ssid, password):
-    ok, message = connect_wifi(runtime, ssid, password)
+def _wifi_connect_bg(iface, ssid, password):
+    ok, message = connect_wifi(iface, ssid, password)
     with _wifi_connect_state_lock:
         _wifi_connect_state.update({"status": "ok" if ok else "error", "ssid": ssid, "message": message})
 
 
-def start_wifi_connect(runtime, ssid, password):
+def start_wifi_connect(iface, ssid, password):
     with _wifi_connect_state_lock:
         if _wifi_connect_state["status"] == "connecting":
             return False
         _wifi_connect_state.update({"status": "connecting", "ssid": ssid, "message": None})
-    threading.Thread(target=_wifi_connect_bg, args=(runtime, ssid, password), daemon=True).start()
+    threading.Thread(target=_wifi_connect_bg, args=(iface, ssid, password), daemon=True).start()
     return True
 
 
@@ -843,6 +1002,384 @@ def trigger_power_action(action):
     return True
 
 
+# ---------------------------------------------------------------------------
+# VPN (WireGuard) -- connect/disconnect a tunnel, and choose whose gateway-
+# bound traffic gets routed through it. Client-to-client traffic on the AP
+# subnet never touches any of this: hostapd relays it directly (ap_isolate is
+# off), so it stays off this box's routing table entirely regardless of mode.
+# ---------------------------------------------------------------------------
+VPN_IF = "wg-pi5"
+# Table number doubles as the fwmark value -- both are arbitrary but have to
+# agree with each other and with the `ip rule` that PostUp/PreDown install
+# below; 51820 (WireGuard's default port) is just a memorable choice, not
+# otherwise significant.
+VPN_TABLE = 51820
+VPN_FWMARK = 51820
+# WG_CONF_PATH is the one file wg-quick@wg-pi5 actually reads -- the fixed
+# `wg-pi5` interface name is what nftables/policy-routing already expect, so
+# only one config can ever be "live" at a time. VPN_LIBRARY_DIR holds every
+# *saved* config regardless of which (if any) is currently live; "activating"
+# one copies its content into WG_CONF_PATH and (re)connects. This split is
+# what lets the dashboard offer a named, switchable list instead of one
+# anonymous config.
+WG_CONF_PATH = Path("/etc/wireguard/wg-pi5.conf")
+VPN_LIBRARY_DIR = Path("/etc/wireguard/pi5-router-vpn-library")
+VPN_LIBRARY_INDEX_PATH = Path("/etc/pi5-router/vpn-library.json")
+VPN_MODE_STATE_PATH = Path("/etc/pi5-router/vpn-mode.json")
+
+VPN_PROVIDERS = {
+    "protonvpn": {
+        "label": "ProtonVPN",
+        "help_url": "https://account.protonvpn.com/downloads",
+        "help": [
+            "Open ProtonVPN's WireGuard configuration page (link above) in a new tab.",
+            "Pick a server or location, then download the .conf file it generates.",
+            "Open that file in a text editor, copy everything, and paste it below.",
+        ],
+        "fields": [
+            {
+                "name": "config",
+                "label": "WireGuard configuration",
+                "type": "textarea",
+                "placeholder": "Paste the whole .conf file here",
+            },
+        ],
+    },
+}
+
+
+def get_vpn_providers():
+    return [
+        {
+            "id": pid,
+            "label": p["label"],
+            "fields": p["fields"],
+            "help": p.get("help", []),
+            "help_url": p.get("help_url"),
+        }
+        for pid, p in VPN_PROVIDERS.items()
+    ]
+
+
+_WG_ROUTING_KEYS_RE = re.compile(r"(?i)^(table|postup|predown|dns)\s*=")
+# WireGuard keys are fixed-size (32-byte Curve25519 keys), so base64 always
+# comes out to exactly 43 content characters plus one '=' padding char --
+# not a range, an exact format. A generated real key confirms this
+# (`wg genkey`): e.g. "OOHrBk+n5W3rtzoYFv1aJpNJoJojFqNVi2UKDZs6BHI=".
+_WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+
+
+def _wg_sections(raw):
+    """Returns (interface_block, peer_block) -- the raw text following the
+    first [Interface]/[Peer] header up to the next section header or EOF."""
+    def _section(name):
+        m = re.search(rf"(?im)^\[{name}\]\s*$(.*?)(?=^\[|\Z)", raw, re.DOTALL)
+        return m.group(1) if m else ""
+    return _section("interface"), _section("peer")
+
+
+def _wg_value(block, key):
+    m = re.search(rf"(?im)^\s*{key}\s*=\s*(.+?)\s*$", block)
+    return m.group(1).strip() if m else None
+
+
+def _validate_wg_config(raw):
+    """Structural validation with a specific, actionable message per failure
+    -- the paste-a-config step is the single most intimidating part of
+    setting this up, so a generic "invalid config" error just adds to that.
+    This is not cryptographic validation (it can't tell you the private key
+    is *wrong*, only that it's missing or malformed-looking); wg-quick itself
+    is still the real authority once a config is actually activated."""
+    if not raw.strip():
+        return False, "Paste a WireGuard configuration first."
+
+    has_interface = re.search(r"(?im)^\[interface\]\s*$", raw)
+    has_peer = re.search(r"(?im)^\[peer\]\s*$", raw)
+    if not has_interface and not has_peer:
+        return False, (
+            "That doesn't look like a WireGuard config -- no [Interface] or "
+            "[Peer] section found. Make sure you copied the whole file."
+        )
+    if not has_interface:
+        return False, "Missing the [Interface] section -- looks like only part of the file was pasted."
+    if not has_peer:
+        return False, "Missing the [Peer] section -- looks like only part of the file was pasted."
+
+    interface_block, peer_block = _wg_sections(raw)
+
+    private_key = _wg_value(interface_block, "PrivateKey")
+    if not private_key:
+        return False, "Missing PrivateKey in [Interface] -- check you copied the whole file."
+    if not _WG_KEY_RE.match(private_key):
+        return False, "PrivateKey in [Interface] doesn't look like a valid WireGuard key -- check for a copy/paste error."
+
+    if not _wg_value(interface_block, "Address"):
+        return False, "Missing Address in [Interface]."
+
+    public_key = _wg_value(peer_block, "PublicKey")
+    if not public_key:
+        return False, "Missing PublicKey in [Peer]."
+    if not _WG_KEY_RE.match(public_key):
+        return False, "PublicKey in [Peer] doesn't look like a valid WireGuard key -- check for a copy/paste error."
+
+    endpoint = _wg_value(peer_block, "Endpoint")
+    if not endpoint or ":" not in endpoint:
+        return False, "Missing or malformed Endpoint in [Peer] (expected host:port)."
+
+    if not _wg_value(peer_block, "AllowedIPs"):
+        return False, "Missing AllowedIPs in [Peer]."
+
+    return True, None
+
+
+def _inject_wg_routing(conf_text):
+    """Strip any Table/PostUp/PreDown the pasted config already has and
+    install our own. Routes must land in a dedicated table, never `main` /
+    the implicit "auto" wg-quick otherwise uses for a 0.0.0.0/0 peer -- auto
+    would replace this box's own default route, taking the Pi itself off its
+    real uplink rather than just routing the opted-in AP clients.
+
+    Also strips any DNS= line. wg-quick only shells out to the `resolvconf`
+    command when a config has one -- which isn't installed here (and
+    shouldn't be: this is a split-tunnel, and letting the tunnel's DNS
+    become the box's system-wide resolver is exactly the kind of
+    system-wide-hijack-via-DNS failure mode that broke ProtonVPN's own
+    official client during testing, just self-inflicted instead of
+    theirs). Matches the documented limitation that DNS lookups don't
+    follow the VPN mark."""
+    lines = conf_text.splitlines()
+    kept = []
+    in_interface = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower() == "[interface]":
+            in_interface = True
+        elif stripped.startswith("["):
+            in_interface = False
+        if in_interface and _WG_ROUTING_KEYS_RE.match(stripped):
+            continue
+        kept.append(line)
+
+    result = []
+    for line in kept:
+        result.append(line)
+        if line.strip().lower() == "[interface]":
+            result.append(f"Table = {VPN_TABLE}")
+            result.append(f"PostUp = ip rule add fwmark {VPN_FWMARK} table {VPN_TABLE}")
+            result.append(f"PreDown = ip rule del fwmark {VPN_FWMARK} table {VPN_TABLE}")
+    return "\n".join(result) + "\n"
+
+
+def _load_vpn_library():
+    try:
+        data = json.loads(VPN_LIBRARY_INDEX_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data.setdefault("configs", [])
+    data.setdefault("active", None)
+    return data
+
+
+def _save_vpn_library(data):
+    VPN_LIBRARY_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    VPN_LIBRARY_INDEX_PATH.write_text(json.dumps(data))
+
+
+def _library_config_path(config_id):
+    return VPN_LIBRARY_DIR / f"{config_id}.conf"
+
+
+def add_vpn_config(label, provider, fields):
+    if provider not in VPN_PROVIDERS:
+        return False, f"unknown provider: {provider}", None
+    label = (label or "").strip()
+    if not label:
+        return False, 'A name for this config is required (e.g. "Tokyo").', None
+    if len(label) > 40:
+        return False, "Name is too long (max 40 characters).", None
+
+    if provider != "protonvpn":
+        return False, "unsupported provider", None
+
+    raw = (fields.get("config") or "").strip()
+    ok, message = _validate_wg_config(raw)
+    if not ok:
+        return False, message, None
+    content = _inject_wg_routing(raw)
+
+    config_id = uuid.uuid4().hex[:8]
+    VPN_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    path = _library_config_path(config_id)
+    path.write_text(content)
+    path.chmod(0o600)
+
+    library = _load_vpn_library()
+    library["configs"].append({"id": config_id, "label": label, "provider": provider})
+    _save_vpn_library(library)
+    return True, None, config_id
+
+
+def delete_vpn_config(config_id):
+    library = _load_vpn_library()
+    if not any(c["id"] == config_id for c in library["configs"]):
+        return False, "config not found"
+
+    if library.get("active") == config_id:
+        disconnect_vpn()
+        library["active"] = None
+
+    library["configs"] = [c for c in library["configs"] if c["id"] != config_id]
+    _save_vpn_library(library)
+
+    path = _library_config_path(config_id)
+    if path.exists():
+        path.unlink()
+    return True, None
+
+
+def activate_vpn_config(config_id):
+    """Makes a saved config the live tunnel: stops whatever's currently
+    running (if anything), swaps WG_CONF_PATH's content for the selected
+    config, and reconnects. Only one config can ever be live at a time --
+    see the WG_CONF_PATH/VPN_LIBRARY_DIR comment above."""
+    library = _load_vpn_library()
+    entry = next((c for c in library["configs"] if c["id"] == config_id), None)
+    if not entry:
+        return False, "config not found"
+
+    src = _library_config_path(config_id)
+    if not src.exists():
+        return False, "saved config file is missing"
+
+    if systemctl_is_active(f"wg-quick@{VPN_IF}") == "active":
+        _, err, rc = run_capture(["systemctl", "stop", f"wg-quick@{VPN_IF}"], timeout=20)
+        if rc != 0:
+            return False, err or "failed to stop the current tunnel before switching"
+
+    WG_CONF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WG_CONF_PATH.write_text(src.read_text())
+    WG_CONF_PATH.chmod(0o600)
+
+    library["active"] = config_id
+    _save_vpn_library(library)
+
+    return connect_vpn()
+
+
+def connect_vpn():
+    if not WG_CONF_PATH.exists():
+        return False, "no VPN configuration saved yet"
+    _, err, rc = run_capture(["systemctl", "enable", "--now", f"wg-quick@{VPN_IF}"], timeout=20)
+    if rc != 0:
+        return False, err or "failed to start VPN tunnel"
+    return True, None
+
+
+def disconnect_vpn():
+    _, err, rc = run_capture(["systemctl", "disable", "--now", f"wg-quick@{VPN_IF}"], timeout=20)
+    if rc != 0:
+        return False, err or "failed to stop VPN tunnel"
+    return True, None
+
+
+def _load_vpn_mode_state():
+    try:
+        return json.loads(VPN_MODE_STATE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"mode": "off", "macs": []}
+
+
+def _save_vpn_mode_state(mode, macs):
+    VPN_MODE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    VPN_MODE_STATE_PATH.write_text(json.dumps({"mode": mode, "macs": macs}))
+
+
+def apply_vpn_mode(runtime, mode, macs):
+    """mode: "off" (no marking), "all" (every AP client), or "selected"
+    (only the given MACs, resolved to their current DHCP-leased IP -- MACs
+    rather than IPs so a stale lease doesn't silently keep routing the wrong
+    address once it's been reassigned)."""
+    if mode not in ("off", "all", "selected"):
+        return False, "mode must be 'off', 'all', or 'selected'"
+    ap_if = runtime.get("AP_WIFI_IF", "")
+    if not ap_if:
+        return False, "AP interface not detected"
+
+    run(["nft", "flush", "chain", "ip", "vpn", "vpn_mark"])
+    run(["nft", "flush", "set", "ip", "vpn", "vpn_clients"])
+
+    if mode == "all":
+        _, err, rc = run_capture(
+            ["nft", "add", "rule", "ip", "vpn", "vpn_mark", "iifname", ap_if, "meta", "mark", "set", str(VPN_FWMARK)]
+        )
+        if rc != 0:
+            return False, err or "failed to apply nftables rule"
+    elif mode == "selected":
+        leases = _parse_leases()
+        ips = sorted({leases[m]["ip"] for m in {mac.lower() for mac in macs} if m in leases and leases[m].get("ip")})
+        if ips:
+            _, err, rc = run_capture(
+                ["nft", "add", "element", "ip", "vpn", "vpn_clients", "{ " + ", ".join(ips) + " }"]
+            )
+            if rc != 0:
+                return False, err or "failed to update client set"
+            _, err, rc = run_capture(
+                [
+                    "nft", "add", "rule", "ip", "vpn", "vpn_mark",
+                    "iifname", ap_if, "ip", "saddr", "@vpn_clients", "meta", "mark", "set", str(VPN_FWMARK),
+                ]
+            )
+            if rc != 0:
+                return False, err or "failed to apply nftables rule"
+
+    _save_vpn_mode_state(mode, macs if mode == "selected" else [])
+    return True, None
+
+
+def get_vpn_status():
+    library = _load_vpn_library()
+    active_id = library.get("active")
+    active_entry = next((c for c in library["configs"] if c["id"] == active_id), None)
+
+    configured = WG_CONF_PATH.exists() and active_entry is not None
+    unit_state = systemctl_is_active(f"wg-quick@{VPN_IF}") if configured else "inactive"
+    connected = unit_state == "active"
+
+    status = {
+        "provider": active_entry["provider"] if active_entry else None,
+        "label": active_entry["label"] if active_entry else None,
+        "configured": configured,
+        "connected": connected,
+        "unit_state": unit_state,
+        "configs": library["configs"],
+        "active_config_id": active_id,
+        "endpoint": None,
+        "tunnel_ip": None,
+        "latest_handshake": None,
+        "rx_bytes": None,
+        "tx_bytes": None,
+    }
+
+    if connected:
+        out, rc = run(["wg", "show", VPN_IF, "dump"])
+        if rc == 0:
+            lines = out.splitlines()
+            if len(lines) >= 2:
+                # peer line: pubkey psk endpoint allowed-ips latest-hs rx tx keepalive
+                peer = lines[1].split("\t")
+                if len(peer) >= 7:
+                    status["endpoint"] = peer[2] if peer[2] != "(none)" else None
+                    status["latest_handshake"] = int(peer[4]) if peer[4].isdigit() and peer[4] != "0" else None
+                    status["rx_bytes"] = int(peer[5]) if peer[5].isdigit() else None
+                    status["tx_bytes"] = int(peer[6]) if peer[6].isdigit() else None
+        status["tunnel_ip"] = _iface_ipv4(VPN_IF)
+
+    mode_state = _load_vpn_mode_state()
+    status["mode"] = mode_state.get("mode", "off")
+    status["selected_clients"] = mode_state.get("macs", [])
+    return status
+
+
 app = Flask(__name__, static_folder=None)
 
 
@@ -859,10 +1396,15 @@ def static_files(filename):
 @app.route("/api/status")
 def api_status():
     conf, runtime = load_config()
+    # Cheap no-op unless a USB wifi adapter was plugged/unplugged or the
+    # dashboard's selection changed since the last poll -- see
+    # maybe_reapply_uplink_selection's docstring.
+    maybe_reapply_uplink_selection(runtime)
     return jsonify(
         {
             "ap": get_ap_status(conf, runtime),
             "uplink": get_uplink_status(runtime),
+            "uplink_wifi_adapters": get_uplink_wifi_adapters(runtime),
             "wifi_connect": get_wifi_connect_state(),
             "wan_ip": get_wan_ip(),
             "clients": get_clients(runtime),
@@ -870,10 +1412,74 @@ def api_status():
             "services": get_services_status(),
             "speedtest": get_speedtest_result(),
             "clock": get_clock_status(),
+            "vpn": get_vpn_status(),
             "ssh_port": conf.get("SSH_PORT"),
             "rdp_port": conf.get("RDP_PORT"),
         }
     )
+
+
+@app.route("/api/vpn/providers")
+def api_vpn_providers():
+    return jsonify(get_vpn_providers())
+
+
+@app.route("/api/vpn/configs", methods=["POST"])
+def api_vpn_configs_add():
+    payload = request.get_json(silent=True) or {}
+    label = payload.get("label") or ""
+    provider = payload.get("provider") or ""
+    fields = payload.get("fields") or {}
+
+    ok, message, config_id = add_vpn_config(label, provider, fields)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "id": config_id, "vpn": get_vpn_status()})
+
+
+@app.route("/api/vpn/configs/<config_id>", methods=["DELETE"])
+def api_vpn_configs_delete(config_id):
+    ok, message = delete_vpn_config(config_id)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "vpn": get_vpn_status()})
+
+
+@app.route("/api/vpn/configs/<config_id>/activate", methods=["POST"])
+def api_vpn_configs_activate(config_id):
+    ok, message = activate_vpn_config(config_id)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "vpn": get_vpn_status()})
+
+
+@app.route("/api/vpn/connect", methods=["POST"])
+def api_vpn_connect():
+    ok, message = connect_vpn()
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "vpn": get_vpn_status()})
+
+
+@app.route("/api/vpn/disconnect", methods=["POST"])
+def api_vpn_disconnect():
+    ok, message = disconnect_vpn()
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "vpn": get_vpn_status()})
+
+
+@app.route("/api/vpn/mode", methods=["POST"])
+def api_vpn_mode():
+    payload = request.get_json(silent=True) or {}
+    mode = payload.get("mode") or ""
+    macs = payload.get("macs") or []
+
+    _, runtime = load_config()
+    ok, message = apply_vpn_mode(runtime, mode, macs)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "vpn": get_vpn_status()})
 
 
 @app.route("/api/speedtest/run", methods=["POST"])
@@ -894,7 +1500,8 @@ def api_timezones():
 @app.route("/api/wifi/scan")
 def api_wifi_scan():
     _, runtime = load_config()
-    return jsonify(get_wifi_networks(runtime))
+    iface = get_active_uplink_wifi_if(runtime)
+    return jsonify(get_wifi_networks(iface))
 
 
 @app.route("/api/wifi/connect", methods=["POST"])
@@ -907,10 +1514,29 @@ def api_wifi_connect():
         return jsonify({"status": "error", "message": "network name is required"}), 400
 
     _, runtime = load_config()
-    started = start_wifi_connect(runtime, ssid, password)
+    iface = get_active_uplink_wifi_if(runtime)
+    started = start_wifi_connect(iface, ssid, password)
     if not started:
         return jsonify({"status": "already_connecting"}), 409
     return jsonify({"status": "started"})
+
+
+@app.route("/api/uplink/wifi_adapters")
+def api_uplink_wifi_adapters():
+    _, runtime = load_config()
+    return jsonify(get_uplink_wifi_adapters(runtime))
+
+
+@app.route("/api/uplink/wifi_adapter/select", methods=["POST"])
+def api_uplink_wifi_adapter_select():
+    payload = request.get_json(silent=True) or {}
+    iface = payload.get("interface") or None
+
+    _, runtime = load_config()
+    ok, message = select_uplink_wifi_adapter(runtime, iface)
+    if not ok:
+        return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "uplink_wifi_adapters": get_uplink_wifi_adapters(runtime)})
 
 
 @app.route("/api/clock/set", methods=["POST"])
@@ -956,9 +1582,25 @@ def api_system_power():
 
 
 def main():
-    conf, _ = load_config()
+    conf, runtime = load_config()
     port = int(conf.get("DASHBOARD_PORT", "8080"))
     ap_ip = conf.get("AP_IP", "172.24.1.1")
+
+    # nftables.service re-renders /etc/nftables.conf from scratch on every
+    # boot (the `vpn` table starts empty -- see nftables.conf.tmpl), so
+    # whatever traffic mode was last chosen has to be re-applied here rather
+    # than assumed to persist on its own.
+    mode_state = _load_vpn_mode_state()
+    if mode_state.get("mode", "off") != "off":
+        apply_vpn_mode(runtime, mode_state.get("mode", "off"), mode_state.get("macs", []))
+
+    # Likewise the nftables `uplinks` set starts with just ETH_IF/VPN_IF on
+    # every boot -- reconcile it against whatever USB wifi adapter(s) are
+    # actually plugged in right now before the dashboard starts serving,
+    # rather than waiting for the first /api/status poll to notice.
+    global _last_uplink_signature
+    candidates, active = apply_uplink_selection(runtime)
+    _last_uplink_signature = (tuple(candidates), active)
 
     threads = [
         threading.Thread(

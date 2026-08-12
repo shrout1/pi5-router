@@ -222,6 +222,69 @@ function renderSessions(sessions) {
   }
 }
 
+let wifiAdapterActive = null;
+let wifiAdapterSwitching = false;
+
+function renderWifiAdapters(info) {
+  const select = document.getElementById("wifi-adapter-select");
+  const scanBtn = document.getElementById("wifi-scan");
+  wifiAdapterActive = info.active;
+
+  // Don't stomp on the dropdown while a switch this tab just requested is
+  // still in flight -- the next poll after it lands will reflect it anyway.
+  if (wifiAdapterSwitching) return;
+
+  if (!info.candidates.length) {
+    select.innerHTML = '<option value="">No USB wifi adapter detected</option>';
+    select.disabled = true;
+    scanBtn.disabled = true;
+    return;
+  }
+
+  scanBtn.disabled = false;
+  select.disabled = false;
+  const options = info.candidates.map((c) => {
+    const activeTag = c.interface === info.active ? (info.auto ? " (active, auto)" : " (active)") : "";
+    return `<option value="${c.interface}">${c.label}${activeTag}</option>`;
+  });
+  select.innerHTML = options.join("");
+  select.value = info.active || info.candidates[0].interface;
+}
+
+async function selectWifiAdapter() {
+  const select = document.getElementById("wifi-adapter-select");
+  const message = document.getElementById("wifi-adapter-message");
+  const iface = select.value;
+  if (iface === wifiAdapterActive) return;
+
+  wifiAdapterSwitching = true;
+  message.textContent = `Switching to ${iface}…`;
+  message.className = "message";
+  try {
+    const res = await fetch("/api/uplink/wifi_adapter/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interface: iface }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = `Now using ${iface} as the wifi uplink.`;
+      message.className = "message ok";
+    } else {
+      message.textContent = data.message || "Failed to switch adapter.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    wifiAdapterSwitching = false;
+    poll();
+  }
+}
+
+document.getElementById("wifi-adapter-select").addEventListener("change", selectWifiAdapter);
+
 let wifiNetworks = [];
 let selectedSsid = null;
 
@@ -525,12 +588,15 @@ async function poll() {
     const data = await res.json();
     renderAp(data.ap);
     renderUplink(data.uplink, data.wan_ip);
+    renderWifiAdapters(data.uplink_wifi_adapters);
     renderWifiConnectState(data.wifi_connect);
     renderSpeedtest(data.speedtest);
     renderServices(data.services);
     renderClients(data.clients);
     renderSessions(data.sessions);
     renderClock(data.clock);
+    vpnClients = data.clients;
+    renderVpn(data.vpn);
     indicator.classList.remove("stale");
   } catch (err) {
     indicator.classList.add("stale");
@@ -640,6 +706,288 @@ async function triggerPower(action) {
 
 document.getElementById("power-reboot").addEventListener("click", () => triggerPower("reboot"));
 document.getElementById("power-shutdown").addEventListener("click", () => triggerPower("shutdown"));
+
+// Provider field schema + help steps -- fetched once from the backend
+// rather than duplicated here, so a future non-ProtonVPN provider only
+// needs a backend change (VPN_PROVIDERS in app.py), not a frontend one too.
+let vpnProviders = {};
+
+function renderVpnProviderFields() {
+  const provider = document.getElementById("vpn-provider-select").value;
+  const info = vpnProviders[provider] || { fields: [], help: [], help_url: null };
+
+  const help = document.getElementById("vpn-provider-help");
+  help.innerHTML = info.help
+    .map((step, i) => {
+      if (i === 0 && info.help_url) {
+        return `<li><a href="${info.help_url}" target="_blank" rel="noopener">${step}</a></li>`;
+      }
+      return `<li>${step}</li>`;
+    })
+    .join("");
+
+  const container = document.getElementById("vpn-provider-fields");
+  container.innerHTML = "";
+  for (const field of info.fields) {
+    const label = document.createElement("label");
+    label.textContent = field.label;
+    const input = document.createElement(field.type === "textarea" ? "textarea" : "input");
+    if (field.type !== "textarea") input.type = field.type;
+    else {
+      input.rows = 8;
+      input.style.fontFamily = "monospace";
+      input.style.fontSize = "0.8rem";
+    }
+    input.id = `vpn-field-${field.name}`;
+    input.placeholder = field.placeholder || "";
+    input.autocomplete = "off";
+    label.appendChild(input);
+    container.appendChild(label);
+  }
+}
+
+async function loadVpnProviders() {
+  try {
+    const res = await fetch("/api/vpn/providers");
+    if (!res.ok) return;
+    const providers = await res.json();
+    const select = document.getElementById("vpn-provider-select");
+    select.innerHTML = providers.map((p) => `<option value="${p.id}">${p.label}</option>`).join("");
+    vpnProviders = Object.fromEntries(providers.map((p) => [p.id, p]));
+    renderVpnProviderFields();
+  } catch (err) {
+    // non-fatal -- the static ProtonVPN <option> already in the HTML still works
+  }
+}
+
+document.getElementById("vpn-provider-select").addEventListener("change", renderVpnProviderFields);
+
+async function saveVpnConfig() {
+  const btn = document.getElementById("vpn-save-config");
+  const message = document.getElementById("vpn-config-message");
+  const provider = document.getElementById("vpn-provider-select").value;
+  const label = document.getElementById("vpn-config-label").value.trim();
+  const fields = {};
+  for (const field of (vpnProviders[provider] || { fields: [] }).fields) {
+    const el = document.getElementById(`vpn-field-${field.name}`);
+    if (el) fields[field.name] = el.value;
+  }
+
+  btn.disabled = true;
+  message.textContent = "";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/vpn/configs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, provider, fields }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = `Saved "${label}".`;
+      message.className = "message ok";
+      document.getElementById("vpn-config-label").value = "";
+      renderVpnProviderFields(); // clears the pasted config from the form
+    } else {
+      message.textContent = data.message || "Failed to save VPN configuration.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+    poll();
+  }
+}
+
+document.getElementById("vpn-save-config").addEventListener("click", saveVpnConfig);
+
+function renderVpnConfigList(vpn) {
+  const list = document.getElementById("vpn-config-list");
+  const configs = vpn.configs || [];
+  list.innerHTML = "";
+  if (!configs.length) {
+    list.innerHTML = '<li class="empty">No configs saved yet</li>';
+    return;
+  }
+  for (const c of configs) {
+    const isActive = c.id === vpn.active_config_id;
+    const li = document.createElement("li");
+    li.className = isActive ? "selected" : "";
+
+    const info = document.createElement("span");
+    const providerLabel = (vpnProviders[c.provider] || {}).label || c.provider;
+    const activeTag = isActive ? (vpn.connected ? " (connected)" : " (selected, disconnected)") : "";
+    info.textContent = `${c.label} — ${providerLabel}${activeTag}`;
+
+    const actions = document.createElement("span");
+    actions.className = "list-row-actions";
+
+    const connectBtn = document.createElement("button");
+    if (isActive && vpn.connected) {
+      connectBtn.textContent = "Disconnect";
+      connectBtn.className = "btn-warn";
+      connectBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        vpnConfigAction(c.id, "disconnect");
+      });
+    } else {
+      connectBtn.textContent = "Connect";
+      connectBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        vpnConfigAction(c.id, isActive ? "connect" : "activate");
+      });
+    }
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.className = "btn-danger";
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      vpnConfigAction(c.id, "delete", c.label);
+    });
+
+    actions.appendChild(connectBtn);
+    actions.appendChild(deleteBtn);
+    li.appendChild(info);
+    li.appendChild(actions);
+    list.appendChild(li);
+  }
+}
+
+async function vpnConfigAction(configId, action, label) {
+  const message = document.getElementById("vpn-config-action-message");
+
+  if (action === "delete" && !window.confirm(`Delete "${label}"? This can't be undone.`)) {
+    return;
+  }
+
+  const verbs = { activate: "Connecting…", connect: "Connecting…", disconnect: "Disconnecting…", delete: "Deleting…" };
+  message.textContent = verbs[action];
+  message.className = "message";
+
+  try {
+    let res;
+    if (action === "activate") {
+      res = await fetch(`/api/vpn/configs/${configId}/activate`, { method: "POST" });
+    } else if (action === "connect") {
+      res = await fetch("/api/vpn/connect", { method: "POST" });
+    } else if (action === "disconnect") {
+      res = await fetch("/api/vpn/disconnect", { method: "POST" });
+    } else {
+      res = await fetch(`/api/vpn/configs/${configId}`, { method: "DELETE" });
+    }
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = "";
+    } else {
+      message.textContent = data.message || `Failed to ${action}.`;
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    poll();
+  }
+}
+
+let vpnClients = [];
+let vpnSelectedMacs = new Set();
+
+function renderVpnClientList() {
+  const list = document.getElementById("vpn-client-list");
+  const mode = document.getElementById("vpn-mode-select").value;
+  list.hidden = mode !== "selected";
+  if (mode !== "selected") return;
+
+  list.innerHTML = "";
+  if (!vpnClients.length) {
+    list.innerHTML = '<li class="empty">No clients connected</li>';
+    return;
+  }
+  for (const c of vpnClients) {
+    const li = document.createElement("li");
+    li.className = vpnSelectedMacs.has(c.mac) ? "selected" : "";
+    li.innerHTML = `<span>${c.hostname || c.mac}</span><span class="wifi-meta">${c.ip || "—"}</span>`;
+    li.addEventListener("click", () => {
+      if (vpnSelectedMacs.has(c.mac)) vpnSelectedMacs.delete(c.mac);
+      else vpnSelectedMacs.add(c.mac);
+      renderVpnClientList();
+    });
+    list.appendChild(li);
+  }
+}
+
+document.getElementById("vpn-mode-select").addEventListener("change", renderVpnClientList);
+
+let vpnModeInitialized = false;
+
+function fmtBytes(bytes) {
+  if (bytes == null) return "—";
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+function renderVpn(vpn) {
+  setText("vpn-label", vpn.label || "none selected");
+  const connected = document.getElementById("vpn-connected");
+  connected.textContent = vpn.connected ? "connected" : vpn.configured ? "disconnected" : "not configured";
+  connected.className = `status ${vpn.connected ? "up" : "unknown"}`;
+  setText("vpn-tunnel-ip", vpn.tunnel_ip);
+  setText("vpn-endpoint", vpn.endpoint);
+  setText("vpn-handshake", vpn.latest_handshake ? new Date(vpn.latest_handshake * 1000).toLocaleString() : "—");
+  setText(
+    "vpn-transfer",
+    vpn.rx_bytes != null && vpn.tx_bytes != null ? `${fmtBytes(vpn.rx_bytes)} down / ${fmtBytes(vpn.tx_bytes)} up` : "—"
+  );
+
+  renderVpnConfigList(vpn);
+
+  // Only prefill once, same reasoning as the clock form -- a poll landing
+  // mid-selection shouldn't stomp on what the user is currently choosing.
+  if (!vpnModeInitialized) {
+    document.getElementById("vpn-mode-select").value = vpn.mode || "off";
+    vpnSelectedMacs = new Set(vpn.selected_clients || []);
+    vpnModeInitialized = true;
+  }
+  renderVpnClientList();
+}
+
+async function applyVpnMode() {
+  const btn = document.getElementById("vpn-mode-apply");
+  const message = document.getElementById("vpn-mode-message");
+  const mode = document.getElementById("vpn-mode-select").value;
+  const macs = mode === "selected" ? Array.from(vpnSelectedMacs) : [];
+
+  btn.disabled = true;
+  message.textContent = "";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/vpn/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, macs }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      message.textContent = "Traffic mode applied.";
+      message.className = "message ok";
+    } else {
+      message.textContent = data.message || "Failed to apply traffic mode.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    btn.disabled = false;
+    poll();
+  }
+}
+
+document.getElementById("vpn-mode-apply").addEventListener("click", applyVpnMode);
+loadVpnProviders();
 
 poll();
 setInterval(poll, POLL_MS);
