@@ -1,0 +1,7 @@
+#!/bin/sh
+# Managed by pi5-router install.sh — do not edit by hand.
+# Tears down what openvpn-client-up.sh.tmpl installed. See that file for
+# why these values are what they are.
+
+ip route del default dev "$dev" table 51820 2>/dev/null || true
+ip rule del fwmark 51820 table 51820 2>/dev/null || true

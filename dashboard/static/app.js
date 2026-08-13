@@ -743,6 +743,30 @@ function renderVpnProviderFields() {
     input.autocomplete = "off";
     label.appendChild(input);
     container.appendChild(label);
+
+    // Paste-or-browse -- a file picker alongside the textarea reads the
+    // chosen file straight into it (still editable/reviewable before
+    // saving, doesn't submit anything on its own), so you don't have to
+    // open the file yourself just to copy its contents.
+    if (field.type === "textarea") {
+      const fileLabel = document.createElement("label");
+      fileLabel.className = "vpn-file-picker";
+      fileLabel.textContent = "…or browse for the file";
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = ".conf,.ovpn,.txt,text/plain";
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          input.value = reader.result;
+        };
+        reader.readAsText(file);
+      });
+      fileLabel.appendChild(fileInput);
+      container.appendChild(fileLabel);
+    }
   }
 }
 

@@ -1,0 +1,21 @@
+#!/bin/sh
+# Managed by pi5-router install.sh — do not edit by hand.
+#
+# OpenVPN client --up script: installs the same fwmark/policy-routing setup
+# WireGuard's own Table=/PostUp directives install declaratively (see
+# _inject_wg_routing in dashboard/app.py) -- a route in a dedicated table,
+# never `main`, so this never replaces the Pi's own default route. Only
+# opted-in AP clients' marked traffic (see the "ip vpn" nftables table) ever
+# gets routed via this table; everything else is untouched regardless of
+# whether this tunnel is up.
+#
+# 51820 here must match VPN_TABLE/VPN_FWMARK in dashboard/app.py -- both
+# protocols share the same table/fwmark since only one VPN tunnel (of
+# either protocol) is ever active at a time, so there's no collision risk.
+# $dev is set by OpenVPN itself to the real tun interface name it brought
+# up; not hardcoded here so this doesn't care what that name is (dashboard
+# code that reports tunnel status separately expects a fixed name --
+# see VPN_OPENVPN_IF in app.py -- but this script doesn't need to).
+
+ip rule add fwmark 51820 table 51820 2>/dev/null || true
+ip route replace default dev "$dev" table 51820

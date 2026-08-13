@@ -236,6 +236,19 @@ td.empty {
   padding: 0.35rem 0.5rem;
 }
 
+.vpn-file-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: -0.25rem;
+}
+.vpn-file-picker input[type="file"] {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .message {
   margin: 0.5rem 0 0;
   font-size: 0.85rem;

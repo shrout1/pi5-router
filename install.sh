@@ -161,7 +161,7 @@ log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y dnsmasq nftables hostapd xfce4 lightdm xrdp network-manager-gnome \
-    python3-flask speedtest-cli librespeed-cli wireguard wireguard-tools
+    python3-flask speedtest-cli librespeed-cli wireguard wireguard-tools openvpn
 
 # ---------------------------------------------------------------------------
 # 4. AP interface — hostapd
@@ -293,6 +293,21 @@ systemctl restart nftables
 # nothing project-specific is needed there either.
 log "preparing WireGuard directory"
 install -d -m 0700 /etc/wireguard
+
+# ---------------------------------------------------------------------------
+# 7c. VPN (OpenVPN) scaffolding
+# ---------------------------------------------------------------------------
+# Same posture as the WireGuard scaffolding above: only the plumbing goes
+# here, no tunnel exists until a config is saved through the dashboard. The
+# up/down hook scripts are static (not per-config, unlike WireGuard's
+# injected Table=/PostUp/PreDown) since OpenVPN client configs don't have an
+# equivalent single-directive way to land routes in a dedicated table --
+# see the scripts themselves for why this is safe.
+log "preparing OpenVPN client directory"
+install -d -m 0700 /etc/openvpn/client
+install -d -m 0755 /opt/pi5-router/openvpn-hooks
+install -m 0755 "$SCRIPT_DIR/templates/openvpn-client-up.sh.tmpl" /opt/pi5-router/openvpn-hooks/up.sh
+install -m 0755 "$SCRIPT_DIR/templates/openvpn-client-down.sh.tmpl" /opt/pi5-router/openvpn-hooks/down.sh
 
 # ---------------------------------------------------------------------------
 # 8. SSH
