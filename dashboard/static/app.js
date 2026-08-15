@@ -37,6 +37,11 @@ function renderAp(ap) {
   // nothing to prefill it with anyway -- blank means "keep current").
   if (!apSsidFieldInitialized && ap.ssid) {
     document.getElementById("ap-ssid-input").value = ap.ssid;
+    // Reflect the actually-running band, not just the radio's HTML default
+    // (5GHz) -- only on this first sync, same as the SSID field, so it
+    // doesn't fight with whatever the user has clicked since.
+    const bandInput = document.querySelector(`input[name="ap-band"][value="${ap.band}"]`);
+    if (bandInput) bandInput.checked = true;
     apSsidFieldInitialized = true;
   }
 }
@@ -46,6 +51,8 @@ async function updateAp() {
   const message = document.getElementById("ap-message");
   const ssid = document.getElementById("ap-ssid-input").value.trim();
   const passphrase = document.getElementById("ap-passphrase-input").value;
+  const bandInput = document.querySelector('input[name="ap-band"]:checked');
+  const band = bandInput ? bandInput.value : null;
 
   if (!ssid) {
     message.textContent = "SSID is required.";
@@ -60,7 +67,7 @@ async function updateAp() {
     const res = await fetch("/api/ap/update", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ssid, passphrase }),
+      body: JSON.stringify({ ssid, passphrase, band }),
     });
     const data = await res.json();
     if (res.ok && data.status === "ok") {

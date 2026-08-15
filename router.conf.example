@@ -5,8 +5,13 @@ AP_SSID="Armadillo"
 AP_PASSPHRASE=""      # leave blank to be prompted for one (or have a secure
                       # random one generated) the first time install.sh runs
 AP_BAND="a"           # bg = 2.4GHz (broadest device compatibility, ~30-40Mbps
-                      # real-world on a single-stream HT20 link); a = 5GHz
-                      # (much higher throughput, needs 5GHz-capable clients)
+                      # real-world on a single-stream HT20 link, and the one
+                      # that actually gets through walls); a = 5GHz (much
+                      # higher throughput, needs 5GHz-capable clients, much
+                      # shorter range through obstructions). Also switchable
+                      # live from the dashboard's Access Point card -- it
+                      # picks that band's default channel below and restarts
+                      # hostapd (brief disconnect for anyone on the AP).
 AP_CHANNEL="149"      # for AP_BAND=a: a non-DFS channel (36/40/44/48 or
                       # 149/153/157/161/165) avoids the ~1min radar Channel
                       # Availability Check and mid-session channel-switch

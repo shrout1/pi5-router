@@ -174,8 +174,66 @@ def get_ap_status(conf, runtime):
 _AP_SSID_MAX_BYTES = 32
 HOSTAPD_CONF_PATH = Path("/etc/hostapd/hostapd.conf")
 
+# Sane default channel per band when switching bands from the dashboard --
+# matches router.conf.example's own recommendations (149: non-DFS, gets
+# VHT80; 6: least likely to collide with a neighbor sitting on 1 or 11).
+_AP_BAND_DEFAULT_CHANNEL = {"a": "149", "bg": "6"}
 
-def update_ap_credentials(ssid, passphrase):
+
+def _vht_params(channel):
+    # Mirrors install.sh's mapping of non-DFS 5GHz channels to their VHT80
+    # 4-channel block center -- everything else (including all of 2.4GHz)
+    # gets no VHT block at all.
+    try:
+        ch = int(channel)
+    except (TypeError, ValueError):
+        return 0, 0
+    if ch in (36, 40, 44, 48):
+        return 1, 42
+    if ch in (149, 153, 157, 161):
+        return 1, 155
+    return 0, 0
+
+
+def _render_hostapd_conf(ap_if, ssid, passphrase, band, channel):
+    # Rebuilt from scratch every time rather than patched in place: a band
+    # switch changes which lines exist at all (the VHT80 block only applies
+    # to band "a"), not just their values, so a per-line regex substitution
+    # can't cleanly add/remove them. Mirrors install.sh's own generation.
+    lines = [
+        f"interface={ap_if}",
+        "driver=nl80211",
+        "country_code=US",
+        f"ssid={ssid}",
+        "wpa=2",
+        "wpa_key_mgmt=WPA-PSK",
+        f"wpa_passphrase={passphrase}",
+        "rsn_pairwise=CCMP",
+        "auth_algs=1",
+        "macaddr_acl=0",
+        "ignore_broadcast_ssid=0",
+        "wmm_enabled=1",
+        f"channel={channel}",
+        "ieee80211n=1",
+    ]
+    if band == "a":
+        vht_width, vht_center = _vht_params(channel)
+        lines += ["hw_mode=a", "ieee80211ac=1", "ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40]"]
+        if vht_width:
+            lines += [
+                "vht_capab=[SHORT-GI-80]",
+                f"vht_oper_chwidth={vht_width}",
+                f"vht_oper_centr_freq_seg0_idx={vht_center}",
+            ]
+    else:
+        lines += ["hw_mode=g", "ht_capab=[SHORT-GI-20]"]
+    return "\n".join(lines) + "\n"
+
+
+def update_ap_credentials(ssid, passphrase, band=None):
+    conf, runtime = load_config()
+    ap_if = runtime.get("AP_WIFI_IF", "")
+
     ssid = (ssid or "").strip()
     if not ssid:
         return False, "SSID is required"
@@ -186,34 +244,44 @@ def update_ap_credentials(ssid, passphrase):
     if passphrase and not (8 <= len(passphrase) <= 63):
         return False, "Passphrase must be 8-63 characters (WPA2 requirement)"
 
+    current_band = conf.get("AP_BAND", "a")
+    current_channel = conf.get("AP_CHANNEL", "149")
+
+    target_band = current_band
+    if band is not None and band != "":
+        if band not in ("a", "bg"):
+            return False, "band must be 'a' (5GHz) or 'bg' (2.4GHz)"
+        target_band = band
+
+    # Changing band picks that band's default channel -- the old channel
+    # number likely isn't even valid on the new band (e.g. 149 on 2.4GHz).
+    target_channel = current_channel if target_band == current_band else _AP_BAND_DEFAULT_CHANNEL[target_band]
+
     # Blank passphrase means "keep the current one" -- never echo the
     # existing value back to the client to prefill it, so this is the only
-    # way to change just the SSID.
-    def _apply(path, ssid_pattern, ssid_line, pass_pattern, pass_line):
-        if not path.exists():
-            return
-        text = path.read_text()
-        if re.search(ssid_pattern, text, re.MULTILINE):
-            text = re.sub(ssid_pattern, ssid_line, text, flags=re.MULTILINE)
-        else:
-            text += f"\n{ssid_line}\n"
-        if passphrase:
-            if re.search(pass_pattern, text, re.MULTILINE):
-                text = re.sub(pass_pattern, pass_line, text, flags=re.MULTILINE)
-            else:
-                text += f"\n{pass_line}\n"
-        path.write_text(text)
+    # way to change just the SSID/band.
+    target_passphrase = passphrase or conf.get("AP_PASSPHRASE", "")
+    if not target_passphrase:
+        return False, "no passphrase currently configured -- set one now"
 
-    _apply(
-        CONF_PATH,
-        r"^AP_SSID=.*$", f'AP_SSID="{ssid}"',
-        r"^AP_PASSPHRASE=.*$", f'AP_PASSPHRASE="{passphrase}"',
+    if CONF_PATH.exists():
+        text = CONF_PATH.read_text()
+        updates = [("AP_SSID", ssid), ("AP_BAND", target_band), ("AP_CHANNEL", target_channel)]
+        if passphrase:
+            updates.append(("AP_PASSPHRASE", passphrase))
+        for key, value in updates:
+            pattern = rf"^{key}=.*$"
+            line = f'{key}="{value}"'
+            if re.search(pattern, text, re.MULTILINE):
+                text = re.sub(pattern, line, text, flags=re.MULTILINE)
+            else:
+                text += f"\n{line}\n"
+        CONF_PATH.write_text(text)
+
+    HOSTAPD_CONF_PATH.write_text(
+        _render_hostapd_conf(ap_if, ssid, target_passphrase, target_band, target_channel)
     )
-    _apply(
-        HOSTAPD_CONF_PATH,
-        r"^ssid=.*$", f"ssid={ssid}",
-        r"^wpa_passphrase=.*$", f"wpa_passphrase={passphrase}",
-    )
+    HOSTAPD_CONF_PATH.chmod(0o600)
 
     _, rc = run(["systemctl", "restart", "hostapd"], timeout=15)
     if rc != 0:
@@ -1707,8 +1775,9 @@ def api_ap_update():
     payload = request.get_json(silent=True) or {}
     ssid = payload.get("ssid") or ""
     passphrase = payload.get("passphrase") or ""
+    band = payload.get("band") or None
 
-    ok, message = update_ap_credentials(ssid, passphrase)
+    ok, message = update_ap_credentials(ssid, passphrase, band)
     if not ok:
         return jsonify({"status": "error", "message": message}), 400
     conf, runtime = load_config()

@@ -26,6 +26,12 @@
       <div class="clock-form">
         <label>SSID <input type="text" id="ap-ssid-input" maxlength="32"></label>
         <label>Password <input type="password" id="ap-passphrase-input" autocomplete="off" placeholder="leave blank to keep current"></label>
+        <div class="radio-group" id="ap-band-radio">
+          <span class="radio-group-label">Frequency band</span>
+          <label class="radio-option"><input type="radio" name="ap-band" value="a" checked> 5GHz</label>
+          <label class="radio-option"><input type="radio" name="ap-band" value="bg"> 2.4GHz</label>
+        </div>
+        <p class="warning-note">Changing the band restarts the AP -- everyone on it briefly disconnects, on either band.</p>
       </div>
       <button id="ap-update">Update AP</button>
       <p id="ap-message" class="message"></p>

@@ -51,7 +51,8 @@ owns or a small set of well-known package-config lines it edits in place
 ## Dashboard
 
 A small Flask app gives you a one-page view of everything the router's
-doing: AP status with an SSID/password update form, uplink details
+doing: AP status with an SSID/password/band update form (5GHz vs 2.4GHz --
+switching bands restarts the AP), uplink details
 (per-interface IPs, gateway, WAN IP), a multi-provider speed test (Ookla,
 Cloudflare, LibreSpeed, fast.com), an uplink wifi adapter and network picker
 (any number of USB adapters, chosen live, no reinstall needed to add or swap
