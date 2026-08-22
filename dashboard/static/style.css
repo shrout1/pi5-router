@@ -160,6 +160,12 @@ dt {
   font-size: 0.85rem;
 }
 
+dt input[type="checkbox"] {
+  margin: 0 0 0 0.35rem;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
 dd {
   margin: 0;
   text-align: right;

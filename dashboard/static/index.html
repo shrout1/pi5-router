@@ -99,10 +99,14 @@
     </div>
 
     <div class="card" id="card-clock">
-      <h2>System Clock</h2>
+      <div class="card-header-row">
+        <h2>System Clock</h2>
+        <button class="icon-btn" id="clock-get-client-time">Get client time</button>
+      </div>
       <dl>
         <dt>Current</dt><dd id="clock-now">&mdash;</dd>
-        <dt>NTP sync</dt><dd id="clock-ntp" class="status">&mdash;</dd>
+        <dt>NTP sync <input type="checkbox" id="clock-ntp-toggle" title="Enabled"></dt><dd id="clock-ntp" class="status">&mdash;</dd>
+        <dt>Your device</dt><dd id="clock-client-time">&mdash;</dd>
       </dl>
       <div class="clock-form">
         <label>Date <input type="date" id="clock-date"></label>

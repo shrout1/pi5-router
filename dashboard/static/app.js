@@ -501,9 +501,18 @@ function renderClock(clock) {
   clockTimezone = clock.timezone || null;
   updateClockDisplay();
 
+  const ntpToggle = document.getElementById("clock-ntp-toggle");
+  ntpToggle.checked = clock.ntp_enabled;
+  ntpToggle.title = clock.ntp_enabled ? "Enabled" : "Disabled";
+
   const ntp = document.getElementById("clock-ntp");
-  ntp.textContent = clock.ntp_synchronized ? "synchronized" : "not synchronized";
-  ntp.className = `status ${clock.ntp_synchronized ? "up" : "unknown"}`;
+  if (!clock.ntp_enabled) {
+    ntp.textContent = "Disabled";
+    ntp.className = "status unknown";
+  } else {
+    ntp.textContent = clock.ntp_synchronized ? "synchronized" : "not synchronized";
+    ntp.className = `status ${clock.ntp_synchronized ? "up" : "unknown"}`;
+  }
 
   // Only prefill the form once, on first load -- otherwise a poll landing
   // mid-edit would stomp on whatever the user is currently typing.
@@ -586,6 +595,93 @@ async function applyClock() {
 
 document.getElementById("clock-apply").addEventListener("click", applyClock);
 loadTimezones();
+
+// Live control, independent of the Set Clock button below -- flipping this
+// off lets a manually-set time actually stick (see set_clock() server-side:
+// it now only re-enables NTP afterward if it was already on), flipping it
+// back on resumes normal auto-sync.
+async function toggleNtp() {
+  const toggle = document.getElementById("clock-ntp-toggle");
+  const message = document.getElementById("clock-message");
+  const desired = toggle.checked;
+
+  toggle.disabled = true;
+  message.textContent = "";
+  message.className = "message";
+  try {
+    const res = await fetch("/api/clock/ntp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: desired }),
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      renderClock(data.clock);
+    } else {
+      toggle.checked = !desired;
+      message.textContent = data.message || "Failed to change NTP state.";
+      message.className = "message error";
+    }
+  } catch (err) {
+    toggle.checked = !desired;
+    message.textContent = "Request failed.";
+    message.className = "message error";
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
+document.getElementById("clock-ntp-toggle").addEventListener("change", toggleNtp);
+
+// Purely client-side -- the browser already knows its own clock and
+// timezone (Intl.DateTimeFormat's resolvedOptions), no server round-trip
+// needed. Compared against the Pi's own extrapolated time (same estimate
+// updateClockDisplay ticks every second) so a skew shows up directly,
+// rather than making the user eyeball two absolute timestamps against
+// each other -- this is the actual diagnostic signal for a stale/wrong
+// system clock silently breaking a VPN handshake (WireGuard's replay
+// protection rejects a handshake timestamped earlier than the last one
+// it saw from that peer).
+function getClientTime() {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let text = `${now.toLocaleString()} (${tz})`;
+
+  if (clockBaseServerMs != null) {
+    const piNowMs = clockBaseServerMs + (Date.now() - clockBaseLocalMs);
+    const skewMs = now.getTime() - piNowMs;
+    const skewSec = Math.round(Math.abs(skewMs) / 1000);
+    const direction = skewMs >= 0 ? "ahead of" : "behind";
+    let skewText;
+    if (skewSec < 1) {
+      skewText = "in sync with the Pi";
+    } else if (skewSec < 60) {
+      skewText = `${skewSec}s ${direction} the Pi`;
+    } else if (skewSec < 3600) {
+      skewText = `${Math.round(skewSec / 60)}m ${direction} the Pi`;
+    } else {
+      skewText = `${(skewSec / 3600).toFixed(1)}h ${direction} the Pi`;
+    }
+    text += ` — ${skewText}`;
+  }
+
+  setText("clock-client-time", text);
+
+  // Also prefill the Set Clock form with this same reading, so the button
+  // doubles as "sync the Pi to my device" -- one click here, one click on
+  // Set Clock (turning off the NTP checkbox first if it's on, otherwise
+  // this gets stepped straight back per set_clock()'s own behavior).
+  const pad = (n) => String(n).padStart(2, "0");
+  document.getElementById("clock-date").value =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  document.getElementById("clock-time").value =
+    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const tzSelect = document.getElementById("clock-tz");
+  tzSelect.value = tz;
+  currentFormTimezone = tz;
+}
+
+document.getElementById("clock-get-client-time").addEventListener("click", getClientTime);
 
 async function poll() {
   const indicator = document.getElementById("refresh-indicator");

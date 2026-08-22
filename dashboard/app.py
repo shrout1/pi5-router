@@ -1005,6 +1005,14 @@ def get_timezone_list():
     return _TIMEZONE_LIST_CACHE
 
 
+def get_ntp_enabled():
+    # Distinct from NTPSynchronized below: this is the administrative
+    # on/off switch (what `timedatectl set-ntp` and the dashboard's NTP
+    # checkbox control), not whether a sync has actually succeeded yet.
+    out, _ = run(["timedatectl", "show", "-p", "NTP", "--value"])
+    return out == "yes"
+
+
 def get_clock_status():
     tz, _ = run(["timedatectl", "show", "-p", "Timezone", "--value"])
     ntp_synced, _ = run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
@@ -1012,10 +1020,17 @@ def get_clock_status():
         "now": datetime.now().astimezone().isoformat(),
         "timezone": tz or None,
         "ntp_synchronized": ntp_synced == "yes",
+        "ntp_enabled": get_ntp_enabled(),
     }
 
 
 _clock_lock = threading.Lock()
+
+
+def set_ntp_enabled(enabled):
+    with _clock_lock:
+        _, rc = run(["timedatectl", "set-ntp", "true" if enabled else "false"], timeout=10)
+    return rc == 0
 
 
 def set_clock(date_str, time_str, tz):
@@ -1034,13 +1049,20 @@ def set_clock(date_str, time_str, tz):
             if rc != 0:
                 return False, "failed to set timezone"
 
-        # timedatectl refuses manual set-time while NTP is managing the
-        # clock, so drop it, set the time, then turn it back on -- once
-        # the uplink clears the captive portal, timesyncd takes over and
-        # corrects any drift on its own.
-        run(["timedatectl", "set-ntp", "false"], timeout=10)
+        # timedatectl refuses manual set-time while NTP is actively managing
+        # the clock, so drop it just long enough to set the time -- then
+        # restore whatever state NTP was actually in beforehand, rather than
+        # unconditionally forcing it back on. If the dashboard's NTP checkbox
+        # already has it off, leave it off: re-enabling immediately steps the
+        # clock straight back (timesyncd resyncs in well under a second on
+        # this box, confirmed live), which silently undid every manual set
+        # before this checkbox existed to let the value actually stick.
+        ntp_was_enabled = get_ntp_enabled()
+        if ntp_was_enabled:
+            run(["timedatectl", "set-ntp", "false"], timeout=10)
         _, rc = run(["timedatectl", "set-time", dt.strftime("%Y-%m-%d %H:%M:%S")], timeout=10)
-        run(["timedatectl", "set-ntp", "true"], timeout=10)
+        if ntp_was_enabled:
+            run(["timedatectl", "set-ntp", "true"], timeout=10)
 
     if rc != 0:
         return False, "failed to set time"
@@ -1104,6 +1126,25 @@ VPN_PROVIDERS = {
             "Open ProtonVPN's WireGuard configuration page (link above) in a new tab.",
             "Pick a server or location, then download the .conf file it generates.",
             "Open that file in a text editor, copy everything, and paste it below.",
+        ],
+        "fields": [
+            {
+                "name": "config",
+                "label": "WireGuard configuration",
+                "type": "textarea",
+                "placeholder": "Paste the whole .conf file here",
+            },
+        ],
+    },
+    "wireguard": {
+        "label": "WireGuard (generic)",
+        "protocol": "wireguard",
+        "help": [
+            "Get a client config from any WireGuard server -- e.g. home-base's "
+            "\"WireGuard Peers\" card (which shows it exactly once and never stores "
+            "the private key server-side), or another provider/server that isn't "
+            "ProtonVPN.",
+            "Open it in a text editor, copy everything, and paste it below.",
         ],
         "fields": [
             {
@@ -1451,13 +1492,23 @@ def _active_vpn_protocol():
 
 
 def connect_vpn():
+    """Starts the tunnel for this session only -- deliberately `start`, not
+    `enable --now`. A VPN unit enabled at boot would try to connect before
+    there's any way to know the AP's clock is trustworthy yet or a captive
+    portal has been cleared, and a broken handshake under a skewed clock can
+    make the dashboard itself look unreachable to AP clients (WireGuard's
+    replay protection rejects a bad-clock handshake, and "route everything
+    through the VPN" client-traffic modes don't distinguish that from a
+    real outage). Staying disabled means every boot comes up with no
+    tunnel and the dashboard always reachable; reconnecting is one click
+    away once it's actually safe to."""
     protocol = _active_vpn_protocol()
     if protocol not in _VPN_BACKENDS:
         return False, "no VPN configuration saved yet"
     unit, conf_path = _VPN_BACKENDS[protocol]
     if not conf_path.exists():
         return False, "no VPN configuration saved yet"
-    _, err, rc = run_capture(["systemctl", "enable", "--now", unit], timeout=20)
+    _, err, rc = run_capture(["systemctl", "start", unit], timeout=20)
     if rc != 0:
         return False, err or "failed to start VPN tunnel"
     return True, None
@@ -1767,6 +1818,15 @@ def api_clock_set():
     ok, message = set_clock(date_str, time_str, tz)
     if not ok:
         return jsonify({"status": "error", "message": message}), 400
+    return jsonify({"status": "ok", "clock": get_clock_status()})
+
+
+@app.route("/api/clock/ntp", methods=["POST"])
+def api_clock_ntp():
+    payload = request.get_json(silent=True) or {}
+    ok = set_ntp_enabled(bool(payload.get("enabled")))
+    if not ok:
+        return jsonify({"status": "error", "message": "failed to change NTP state"}), 400
     return jsonify({"status": "ok", "clock": get_clock_status()})
 
 
